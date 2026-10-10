@@ -1,0 +1,13 @@
+{
+  "name": "soccer-bot-controller",
+  "version": "1.0.0",
+  "description": "Low-latency keyboard controller for an ESP32 soccer robot (UDP)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "license": "MIT"
+}

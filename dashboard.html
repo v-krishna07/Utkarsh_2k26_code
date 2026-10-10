@@ -1,0 +1,561 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Soccer Bot Control</title>
+<style>
+  :root {
+    --bg: #12141c; --panel: #1c2030; --panel2: #262b40; --line: #3a4160;
+    --text: #f2f4fa; --dim: #a9b0c8; --accent: #3ddc97; --warn: #ffb020; --bad: #ff5a5f; --blue: #5aa9ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 16px; background: var(--bg); color: var(--text);
+    font-family: "Segoe UI", system-ui, -apple-system, Roboto, Arial, sans-serif;
+    font-size: 17px; line-height: 1.45;
+  }
+  header {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 12px;
+    max-width: 1100px; margin: 0 auto 14px;
+  }
+  h1 { margin: 0; font-size: 1.5rem; flex: 1 1 auto; }
+  h2 { margin: 0 0 10px; font-size: 1.05rem; color: var(--dim); text-transform: uppercase; letter-spacing: .08em; }
+  .pill {
+    padding: 6px 14px; border-radius: 999px; font-weight: 700; font-size: .95rem;
+    border: 2px solid var(--line); background: var(--panel);
+  }
+  .pill.ok  { border-color: var(--accent); color: var(--accent); }
+  .pill.bad { border-color: var(--bad); color: var(--bad); }
+  .pill.role { border-color: var(--blue); color: var(--blue); }
+  #clock {
+    font-family: Consolas, "Courier New", monospace; font-size: 2rem; font-weight: 700;
+    padding: 2px 16px; border-radius: 12px; background: var(--panel); border: 2px solid var(--line);
+  }
+  #clock.run  { border-color: var(--accent); color: var(--accent); }
+  #clock.done { border-color: var(--bad); color: var(--bad); animation: blink .7s infinite; }
+  @keyframes blink { 50% { background: #3a1a1c; } }
+
+  main {
+    max-width: 1100px; margin: 0 auto;
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 14px;
+  }
+  .card { background: var(--panel); border-radius: 14px; padding: 16px; border: 1px solid var(--line); }
+  .wide { grid-column: 1 / -1; }
+
+  button {
+    font: inherit; font-weight: 700; color: var(--text); cursor: pointer;
+    background: var(--panel2); border: 2px solid var(--line); border-radius: 10px; padding: 10px 12px;
+  }
+  button:hover { border-color: var(--accent); }
+  button.active { background: var(--accent); color: #0b1a12; border-color: var(--accent); }
+  button.role.active { background: var(--blue); border-color: var(--blue); color: #08131f; }
+  .row { display: flex; gap: 10px; }
+  .row > button { flex: 1; }
+
+  #estop { width: 100%; padding: 16px; font-size: 1.2rem; background: #5a1a1d; border-color: var(--bad); }
+  #estop.on { background: var(--bad); color: #fff; animation: blink 0.8s infinite; }
+  #note { min-height: 1.4em; margin-top: 8px; color: var(--warn); font-weight: 600; }
+
+  .bignum { font-size: 3.6rem; font-weight: 800; line-height: 1; }
+  .bignum small { font-size: 1.1rem; color: var(--dim); font-weight: 600; margin-left: 8px; }
+  .meter { height: 18px; background: #0c0e14; border-radius: 9px; overflow: hidden; margin: 10px 0; border: 1px solid var(--line); }
+  .meter > div { height: 100%; width: 0; background: var(--accent); transition: width .08s; }
+  .meter.boost > div { background: var(--warn); }
+  input[type=range] { width: 100%; accent-color: var(--accent); height: 28px; }
+  input[type=number], select {
+    font: inherit; width: 100px; padding: 6px; text-align: center; color: var(--text);
+    background: #0c0e14; border: 2px solid var(--line); border-radius: 8px;
+  }
+  label { display: inline-block; margin: 6px 14px 6px 0; }
+  .hint { color: var(--dim); font-size: .92rem; margin-top: 8px; }
+
+  .pad { display: grid; grid-template-columns: repeat(3, 84px); grid-template-rows: repeat(2, 76px); gap: 8px; justify-content: center; margin: 6px 0 12px; }
+  .pad button { font-size: 1.7rem; touch-action: none; user-select: none; -webkit-user-select: none; }
+  .pad button.pressed { background: var(--accent); color: #0b1a12; }
+  .pad .up { grid-column: 2; grid-row: 1; } .pad .left { grid-column: 1; grid-row: 2; }
+  .pad .down { grid-column: 2; grid-row: 2; } .pad .right { grid-column: 3; grid-row: 2; }
+
+  table.keys { width: 100%; border-collapse: collapse; font-size: .95rem; }
+  table.keys td { padding: 4px 6px; border-top: 1px solid var(--line); }
+  table.keys td:first-child { white-space: nowrap; width: 38%; }
+  kbd { background: var(--panel2); border: 1px solid var(--line); border-bottom-width: 3px; border-radius: 6px; padding: 1px 7px; font-family: Consolas, monospace; font-size: .9em; }
+
+  .motor { display: flex; align-items: center; gap: 10px; margin: 10px 0; }
+  .motor .name { width: 20px; font-weight: 800; }
+  .motor .val { width: 52px; text-align: right; font-family: Consolas, monospace; font-size: 1.1rem; }
+  .bar { position: relative; flex: 1; height: 20px; background: #0c0e14; border-radius: 10px; overflow: hidden; border: 1px solid var(--line); }
+  .bar::after { content: ""; position: absolute; left: 50%; top: 0; bottom: 0; width: 2px; background: #667; }
+  .fill { position: absolute; top: 0; bottom: 0; background: var(--accent); }
+  .fill.rev { background: var(--warn); }
+
+  #log { background: #0c0e14; color: #8cf0cf; font-family: Consolas, monospace; font-size: .85rem; padding: 10px; border-radius: 8px; height: 130px; overflow-y: auto; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Soccer Bot Control</h1>
+  <div id="link" class="pill bad">Controller: connecting...</div>
+  <div id="role" class="pill role">FREE DRIVE</div>
+  <div id="clock" title="Enter = start / reset the 3:00 match clock">3:00</div>
+</header>
+
+<main>
+  <section class="card">
+    <h2>Safety</h2>
+    <button id="estop">EMERGENCY STOP &nbsp;[Space]</button>
+    <div id="note"></div>
+    <div class="hint">Space toggles the stop. After releasing it, let go of all arrow keys once to re-arm.</div>
+  </section>
+
+  <section class="card">
+    <h2>Speed</h2>
+    <div class="bignum"><span id="speedNum">180</span><small id="speedName">NORMAL</small></div>
+    <div class="meter" id="meter"><div id="meterFill"></div></div>
+    <input type="range" id="speedSlider" min="0" max="255" value="180" aria-label="Speed 0 to 255">
+    <div class="row" style="margin-top:10px">
+      <button id="btnSlow"></button><button id="btnNormal"></button><button id="btnTurbo"></button>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button id="btnGK" class="role"></button><button id="btnST" class="role"></button>
+    </div>
+    <div class="hint">The slider and the buttons control the same speed: whichever you touched last wins. Hold <kbd>B</kbd> for a boost to full power.</div>
+  </section>
+
+  <section class="card">
+    <h2>Drive</h2>
+    <div class="pad">
+      <button class="up" data-dir="up">&#9650;</button>
+      <button class="left" data-dir="left">&#9664;</button>
+      <button class="down" data-dir="down">&#9660;</button>
+      <button class="right" data-dir="right">&#9654;</button>
+    </div>
+    <table class="keys">
+      <tr><td><kbd>&uarr;</kbd> <kbd>&darr;</kbd></td><td>Forward / backward</td></tr>
+      <tr><td><kbd>&larr;</kbd> or <kbd>&rarr;</kbd> alone</td><td>Spin in place</td></tr>
+      <tr><td><kbd>&uarr;</kbd>+<kbd>&rarr;</kbd> etc.</td><td>Drive while turning (arc)</td></tr>
+      <tr><td><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd></td><td>Slow / Normal / Turbo</td></tr>
+      <tr><td><kbd>[</kbd> <kbd>]</kbd></td><td>Speed &minus;10 / +10</td></tr>
+      <tr><td><kbd>Z</kbd> <kbd>X</kbd></td><td>Turn strength Normal / Racing</td></tr>
+      <tr><td><kbd>Q</kbd> <kbd>E</kbd></td><td>Goalkeeper / Striker preset</td></tr>
+      <tr><td><kbd>B</kbd> (hold)</td><td>Boost</td></tr>
+      <tr><td><kbd>Enter</kbd></td><td>Start / reset 3:00 clock</td></tr>
+      <tr><td><kbd>Space</kbd></td><td>Emergency stop</td></tr>
+    </table>
+  </section>
+
+  <section class="card">
+    <h2>Motor output</h2>
+    <div class="motor"><span class="name">L</span><div class="bar"><div class="fill" id="barL"></div></div><span class="val" id="valL">0</span></div>
+    <div class="motor"><span class="name">R</span><div class="bar"><div class="fill" id="barR"></div></div><span class="val" id="valR">0</span></div>
+    <div class="hint" id="trimLine">&nbsp;</div>
+    <div class="hint" id="brakeLine">&nbsp;</div>
+  </section>
+
+  <section class="card">
+    <h2>Turning &amp; handling</h2>
+    <div class="row">
+      <button id="btnTurnNormal"></button><button id="btnTurnRacing"></button>
+    </div>
+    <div style="margin-top:8px">
+      <label>Turn strength (0-1): <input type="number" id="turnInput" min="0" max="1" step="0.05" value="0.35"></label>
+    </div>
+    <div class="hint">0 = straight, 0.5 = inner wheel stopped, 1 = sharpest arc (inner wheel full reverse).</div>
+    <div style="margin-top:10px">
+      <label><input type="checkbox" id="smoothChk" checked> Smooth start (about 0.1 s, protects the battery)</label><br>
+      <label><input type="checkbox" id="brakeChk" checked> Brake when keys are released</label>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Straight-line trim (alpha)</h2>
+    <label>Faster side:
+      <select id="fasterSide"><option value="left">Left</option><option value="right">Right</option></select>
+    </label>
+    <label>Alpha (0-1): <input type="number" id="alphaInput" min="0" max="1" step="0.01" value="1"></label>
+    <div class="hint">The slower side always runs at the chosen speed. The faster side runs at speed &times; alpha so the robot drives straight. Saved on the laptop.
+      To calibrate: drive forward at Turbo; if it pulls to one side, the OTHER side is the faster one. Lower alpha until it goes straight.</div>
+  </section>
+
+  <section class="card wide">
+    <h2>Activity log</h2>
+    <div id="log"></div>
+  </section>
+</main>
+
+<script>
+(function () {
+  'use strict';
+  // ------------------------------ CONFIG ---------------------------------
+  // This page does NO motor math. It reports what the driver wants; server.js
+  // (control.js) computes the motor values and reports them back.
+  var SPEED = { slow: 100, normal: 180, turbo: 255 };
+  var TURN  = { normal: 0.35, racing: 0.75 };
+  var ROLES = {
+    gk: { name: 'GOALKEEPER', speed: 180, turn: 0.5 },
+    st: { name: 'STRIKER',    speed: 255, turn: 0.75 }
+  };
+  var MATCH_MS = 3 * 60 * 1000;
+  var HEARTBEAT_MS = 40;          // intent is also sent immediately on every change
+  var MAX_WS_BACKLOG = 256;       // bytes; if the socket backs up, skip sends (never queue)
+  var WS_URL = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host;
+  // -----------------------------------------------------------------------
+
+  var $ = function (id) { return document.getElementById(id); };
+  var ws = null;
+  var speed = SPEED.normal, turn = TURN.normal;
+  var role = null, estop = false, smooth = true, brake = true;
+  var boostKey = false;
+  var calib = { alpha: 1, fasterSide: 'left' };
+  var lastDriveKey = '', wsLoggedDown = false, busy = false;
+  var keyHeld = {};                       // 'up'|'down'|'left'|'right' -> true  (keyboard)
+  var touchHeld = {};                     // pointerId -> dir                    (on-screen pad)
+
+  // ------------------------------ LOG ------------------------------------
+  function log(text) {
+    var box = $('log');
+    var line = document.createElement('div');
+    line.textContent = '[' + new Date().toLocaleTimeString() + '] ' + text;
+    box.appendChild(line);
+    while (box.children.length > 80) box.removeChild(box.firstChild);
+    box.scrollTop = box.scrollHeight;
+  }
+
+  // ------------------------------ INTENT ---------------------------------
+  function isActive(dir) {
+    if (keyHeld[dir]) return true;
+    for (var id in touchHeld) if (touchHeld[id] === dir) return true;
+    return false;
+  }
+  function readInput() {
+    return {
+      thr: (isActive('up') ? 1 : 0) - (isActive('down') ? 1 : 0),
+      str: (isActive('right') ? 1 : 0) - (isActive('left') ? 1 : 0)
+    };
+  }
+  function wsReady() {
+    return ws && ws.readyState === 1 && !(ws.bufferedAmount > MAX_WS_BACKLOG);
+  }
+  function sendIntent() {
+    if (!wsReady()) return;
+    var inp = readInput();
+    ws.send(JSON.stringify({
+      type: 'intent', thr: inp.thr, str: inp.str,
+      speed: speed, turn: turn, boost: boostKey,
+      estop: estop, smooth: smooth, brake: brake
+    }));
+  }
+  function sendCalib(alpha, side) {
+    if (!ws || ws.readyState !== 1) { log('Not connected - trim not sent.'); return; }
+    ws.send(JSON.stringify({ type: 'calib', alpha: alpha, fasterSide: side }));
+  }
+
+  // ------------------------------ UI SYNC --------------------------------
+  function speedName() {
+    if (speed === SPEED.slow) return 'SLOW';
+    if (speed === SPEED.normal) return 'NORMAL';
+    if (speed === SPEED.turbo) return 'TURBO';
+    return 'CUSTOM';
+  }
+  function turnName() {
+    if (Math.abs(turn - TURN.normal) < 0.001) return 'NORMAL';
+    if (Math.abs(turn - TURN.racing) < 0.001) return 'RACING';
+    return 'CUSTOM';
+  }
+  function refreshUI() {
+    $('speedNum').textContent = speed;
+    $('speedName').textContent = speedName();
+    $('meterFill').style.width = (speed / 255 * 100) + '%';
+    $('speedSlider').value = speed;
+    $('btnSlow').classList.toggle('active', speed === SPEED.slow);
+    $('btnNormal').classList.toggle('active', speed === SPEED.normal);
+    $('btnTurbo').classList.toggle('active', speed === SPEED.turbo);
+    $('btnTurnNormal').classList.toggle('active', turnName() === 'NORMAL');
+    $('btnTurnRacing').classList.toggle('active', turnName() === 'RACING');
+    $('btnGK').classList.toggle('active', role === 'gk');
+    $('btnST').classList.toggle('active', role === 'st');
+    $('role').textContent = role ? ROLES[role].name : 'FREE DRIVE';
+    if (document.activeElement !== $('turnInput')) $('turnInput').value = String(Math.round(turn * 100) / 100);
+  }
+  function setSpeed(v, label) {
+    v = Math.max(0, Math.min(255, Math.round(v)));
+    if (isNaN(v)) return;
+    speed = v;
+    role = null;                                   // a manual change leaves the role preset
+    refreshUI(); sendIntent();
+    if (label) log('Speed -> ' + v + ' (' + label + ')');
+  }
+  function setTurn(v, label) {
+    if (isNaN(v)) return;
+    turn = Math.max(0, Math.min(1, v));
+    refreshUI(); sendIntent();
+    if (label) log('Turn strength -> ' + turn.toFixed(2) + ' (' + label + ')');
+  }
+  function setRole(r) {
+    role = r;
+    speed = ROLES[r].speed;
+    turn = ROLES[r].turn;
+    refreshUI(); sendIntent();
+    log('Role -> ' + ROLES[r].name + ' (speed ' + speed + ', turn ' + turn.toFixed(2) + ')');
+  }
+  function setEstop(on) {
+    estop = on;
+    $('estop').classList.toggle('on', on);
+    $('estop').textContent = on ? 'E-STOP ENGAGED - press Space to release' : 'EMERGENCY STOP  [Space]';
+    sendIntent();
+    log(on ? '*** EMERGENCY STOP ENGAGED ***' : 'Emergency stop released.');
+  }
+  function releaseAll() {
+    var any = false, k;
+    for (k in keyHeld) if (keyHeld[k]) any = true;
+    for (k in touchHeld) any = true;
+    if (any || boostKey) log('Focus lost - inputs released.');
+    keyHeld = {}; touchHeld = {}; boostKey = false;
+    sendIntent();
+  }
+
+  // ------------------------------ TELEMETRY (from Node) ------------------
+  function setBar(fillEl, valEl, v) {
+    var w = Math.min(100, Math.abs(v) / 255 * 50);
+    fillEl.style.width = w + '%';
+    fillEl.style.left = (v >= 0 ? 50 : 50 - w) + '%';
+    fillEl.classList.toggle('rev', v < 0);
+    valEl.textContent = v;
+  }
+  function renderTelemetry(t) {
+    setBar($('barL'), $('valL'), t ? t.l : 0);
+    setBar($('barR'), $('valR'), t ? t.r : 0);
+    $('trimLine').textContent = t
+      ? 'Speed in use ' + t.speed + (t.boost ? ' (BOOST)' : '') + '  ->  after trim: L ' + t.gl + ' | R ' + t.gr
+      : 'Controller not connected';
+    $('brakeLine').textContent = t && t.brake ? 'Motors braking' : ' ';
+    $('meter').classList.toggle('boost', !!(t && t.boost));
+    $('note').textContent = (t && t.waitNeutral) ? 'E-STOP released - let go of all arrow keys to re-arm' : '';
+  }
+  function applyConfig(c) {
+    calib = {
+      alpha: typeof c.alpha === 'number' ? c.alpha : 1,
+      fasterSide: c.fasterSide === 'right' ? 'right' : 'left'
+    };
+    if (document.activeElement !== $('alphaInput')) $('alphaInput').value = calib.alpha;
+    if (document.activeElement !== $('fasterSide')) $('fasterSide').value = calib.fasterSide;
+    log('Trim: faster side = ' + calib.fasterSide.toUpperCase() + ', alpha = ' + calib.alpha);
+  }
+
+  // ------------------------------ MATCH CLOCK ----------------------------
+  var clock = { state: 'idle', endAt: 0 };   // idle | run | done
+  function fmt(ms) {
+    var s = Math.ceil(ms / 1000);
+    return Math.floor(s / 60) + ':' + ('0' + (s % 60)).slice(-2);
+  }
+  function renderClock() {
+    var el = $('clock');
+    if (clock.state === 'run') {
+      var left = clock.endAt - Date.now();
+      if (left <= 0) { clock.state = 'done'; log('TIME UP - 3:00 clock finished.'); }
+    }
+    el.className = clock.state === 'run' ? 'run' : clock.state === 'done' ? 'done' : '';
+    el.textContent = clock.state === 'idle' ? fmt(MATCH_MS)
+                   : clock.state === 'done' ? '0:00'
+                   : fmt(clock.endAt - Date.now());
+  }
+  function toggleClock() {
+    if (clock.state === 'idle') { clock.state = 'run'; clock.endAt = Date.now() + MATCH_MS; log('Match clock started.'); }
+    else { clock.state = 'idle'; log('Match clock reset.'); }
+    renderClock();
+  }
+
+  // ------------------------------ MAIN LOOP ------------------------------
+  function tick() {
+    var inp = readInput();
+    var key = inp.thr + ',' + inp.str;
+    if (key !== lastDriveKey) {
+      lastDriveKey = key;
+      var t = inp.thr > 0 ? 'FORWARD' : inp.thr < 0 ? 'BACKWARD' : '';
+      var s = inp.str > 0 ? 'RIGHT' : inp.str < 0 ? 'LEFT' : '';
+      log('Input: ' + ((t + ' ' + s).replace(/^\s+|\s+$/g, '') || 'STOP'));
+    }
+    var btns = document.querySelectorAll('.pad button');
+    for (var i = 0; i < btns.length; i++) btns[i].classList.toggle('pressed', isActive(btns[i].getAttribute('data-dir')));
+    sendIntent();      // heartbeat; the server brakes the robot if this goes quiet
+  }
+
+  // ------------------------------ WEBSOCKET ------------------------------
+  function setStatus(ok, text) {
+    var el = $('link');
+    el.textContent = text;
+    el.className = 'pill ' + (ok ? 'ok' : 'bad');
+  }
+  function connectWS() {
+    if (location.protocol !== 'http:' && location.protocol !== 'https:') {
+      setStatus(false, 'Open http://localhost:8080 instead of this file');
+      return;
+    }
+    try { ws = new WebSocket(WS_URL); } catch (e) { setTimeout(connectWS, 2000); return; }
+    ws.onopen = function () {
+      wsLoggedDown = false; busy = false;
+      setStatus(true, 'Controller connected');
+      log('Connected to controller.');
+      sendIntent();
+    };
+    ws.onmessage = function (ev) {
+      var m;
+      try { m = JSON.parse(ev.data); } catch (_) { return; }
+      if (!m) return;
+      if (m.type === 'telemetry') renderTelemetry(m);
+      else if (m.type === 'config') applyConfig(m);
+    };
+    ws.onclose = function (ev) {
+      busy = ev && ev.code === 4001;
+      setStatus(false, busy ? 'Another dashboard is open - close it' : 'Controller offline - is server.js running?');
+      renderTelemetry(null);
+      if (!wsLoggedDown) { wsLoggedDown = true; log(busy ? 'Another dashboard already controls the robot.' : 'Controller connection lost. Retrying every 2 s...'); }
+      setTimeout(connectWS, 2000);
+    };
+    ws.onerror = function () { /* onclose follows */ };
+  }
+
+  // ------------------------------ KEYBOARD -------------------------------
+  var ARROWS = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right' };
+  function inNumberField(e) {
+    return e.target && e.target.tagName === 'INPUT' && e.target.type === 'number';
+  }
+
+  window.addEventListener('keydown', function (e) {
+    // Emergency stop has top priority: works from anywhere, with any modifier.
+    if (e.code === 'Space') {
+      e.preventDefault();
+      if (!e.repeat) setEstop(!estop);
+      if (inNumberField(e)) e.target.blur();
+      return;
+    }
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (inNumberField(e)) {
+      if (e.key === 'Enter' || e.key === 'Escape') e.target.blur();
+      return;
+    }
+
+    var dir = ARROWS[e.code];
+    if (dir) {
+      e.preventDefault();                       // no page scroll, no slider/select movement
+      if (!keyHeld[dir]) { keyHeld[dir] = true; sendIntent(); }
+      return;
+    }
+    if (e.code === 'KeyB') {
+      if (!boostKey) { boostKey = true; sendIntent(); }
+      return;
+    }
+    if (e.repeat) return;
+
+    switch (e.code) {
+      case 'Digit1': case 'Numpad1': setSpeed(SPEED.slow, 'SLOW'); break;
+      case 'Digit2': case 'Numpad2': setSpeed(SPEED.normal, 'NORMAL'); break;
+      case 'Digit3': case 'Numpad3': setSpeed(SPEED.turbo, 'TURBO'); break;
+      case 'BracketLeft':  setSpeed(speed - 10, null); break;
+      case 'BracketRight': setSpeed(speed + 10, null); break;
+      case 'KeyZ': setTurn(TURN.normal, 'NORMAL'); break;
+      case 'KeyX': setTurn(TURN.racing, 'RACING'); break;
+      case 'KeyQ': setRole('gk'); break;
+      case 'KeyE': setRole('st'); break;
+      case 'Enter': e.preventDefault(); toggleClock(); break;
+    }
+  });
+
+  window.addEventListener('keyup', function (e) {
+    var dir = ARROWS[e.code];
+    if (dir) { keyHeld[dir] = false; sendIntent(); return; }   // always release, even if focus moved
+    if (e.code === 'KeyB') { boostKey = false; sendIntent(); return; }
+    if (e.code === 'Space') e.preventDefault();
+  });
+
+  window.addEventListener('blur', releaseAll);
+  document.addEventListener('visibilitychange', function () { if (document.hidden) releaseAll(); });
+
+  // ------------------------------ UI EVENTS ------------------------------
+  function click(id, fn) {
+    $(id).addEventListener('click', function (e) { fn(); e.currentTarget.blur(); });
+  }
+  click('btnSlow',   function () { setSpeed(SPEED.slow, 'SLOW'); });
+  click('btnNormal', function () { setSpeed(SPEED.normal, 'NORMAL'); });
+  click('btnTurbo',  function () { setSpeed(SPEED.turbo, 'TURBO'); });
+  click('btnGK',     function () { setRole('gk'); });
+  click('btnST',     function () { setRole('st'); });
+  click('btnTurnNormal', function () { setTurn(TURN.normal, 'NORMAL'); });
+  click('btnTurnRacing', function () { setTurn(TURN.racing, 'RACING'); });
+  click('estop',     function () { setEstop(!estop); });
+
+  $('speedSlider').addEventListener('input', function (e) { setSpeed(parseInt(e.target.value, 10), null); });
+  $('speedSlider').addEventListener('change', function (e) { log('Speed -> ' + speed + ' (' + speedName() + ')'); e.target.blur(); });
+
+  $('turnInput').addEventListener('input', function (e) {
+    var v = parseFloat(e.target.value);
+    if (!isNaN(v)) setTurn(v, null);
+  });
+  $('turnInput').addEventListener('change', function (e) {
+    var v = parseFloat(e.target.value);
+    if (isNaN(v)) v = turn;
+    setTurn(v, null);
+    log('Turn strength -> ' + turn.toFixed(2) + ' (' + turnName() + ')');
+  });
+
+  $('alphaInput').addEventListener('change', function (e) {
+    var v = parseFloat(e.target.value);
+    if (isNaN(v)) v = calib.alpha;
+    v = Math.max(0, Math.min(1, v));
+    e.target.value = v;
+    sendCalib(v, $('fasterSide').value);
+  });
+  $('fasterSide').addEventListener('change', function (e) {
+    var v = parseFloat($('alphaInput').value);
+    if (isNaN(v)) v = calib.alpha;
+    sendCalib(Math.max(0, Math.min(1, v)), e.target.value);
+    e.target.blur();
+  });
+
+  $('smoothChk').addEventListener('change', function (e) {
+    smooth = e.target.checked; sendIntent(); log('Smooth start ' + (smooth ? 'ON' : 'OFF')); e.target.blur();
+  });
+  $('brakeChk').addEventListener('change', function (e) {
+    brake = e.target.checked; sendIntent(); log('Brake on release ' + (brake ? 'ON' : 'OFF')); e.target.blur();
+  });
+
+  // On-screen pad: multi-touch capable via pointer events
+  var padButtons = document.querySelectorAll('.pad button');
+  Array.prototype.forEach.call(padButtons, function (btn) {
+    var dir = btn.getAttribute('data-dir');
+    btn.addEventListener('pointerdown', function (e) {
+      e.preventDefault();
+      try { btn.setPointerCapture(e.pointerId); } catch (_) {}
+      touchHeld[e.pointerId] = dir;
+      sendIntent();
+    });
+    var release = function (e) { delete touchHeld[e.pointerId]; sendIntent(); };
+    btn.addEventListener('pointerup', release);
+    btn.addEventListener('pointercancel', release);
+    btn.addEventListener('lostpointercapture', release);
+    btn.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+  });
+
+  // ------------------------------ INIT -----------------------------------
+  $('btnSlow').textContent   = 'Slow [1] ' + SPEED.slow;
+  $('btnNormal').textContent = 'Normal [2] ' + SPEED.normal;
+  $('btnTurbo').textContent  = 'Turbo [3] ' + SPEED.turbo;
+  $('btnGK').textContent     = 'Goalkeeper [Q]';
+  $('btnST').textContent     = 'Striker [E]';
+  $('btnTurnNormal').textContent = 'Normal [Z] ' + TURN.normal;
+  $('btnTurnRacing').textContent = 'Racing [X] ' + TURN.racing;
+  $('smoothChk').checked = smooth;
+  $('brakeChk').checked = brake;
+
+  refreshUI();
+  renderTelemetry(null);
+  renderClock();
+  log('Dashboard ready.');
+  setInterval(tick, HEARTBEAT_MS);
+  setInterval(renderClock, 200);
+  connectWS();
+})();
+</script>
+</body>
+</html>
