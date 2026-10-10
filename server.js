@@ -22,6 +22,7 @@ const path = require('path');
 const dgram = require('dgram');
 const WebSocket = require('ws');
 const control = require('./control');
+const maze    = require('./maze');
 
 // ---------------------------- CONFIG ----------------------------------------
 const ESP32_IP   = process.argv[2] || process.env.ESP32_IP || '192.168.4.1';
@@ -34,6 +35,8 @@ const INTENT_TIMEOUT_MS = 300;   // no fresh intent from the browser for this lo
 const TELEMETRY_MS      = 50;    // dashboard refresh (20 Hz)
 const MAX_SEND_QUEUE    = 4;     // drop a frame instead of queueing more than this many
 const CALIB_FILE = process.env.CALIB_FILE || path.join(__dirname, 'calibration.json');
+const MAZE_CALIB_FILE = process.env.MAZE_CALIB_FILE || path.join(__dirname, 'maze_calibration.json');
+const MAZE_TELEM_MS     = 50;    // maze dashboard refresh (20 Hz)
 // ----------------------------------------------------------------------------
 
 if (net.isIP(ESP32_IP) === 0) {
@@ -61,9 +64,38 @@ function saveCalib() {                                // debounced: sliders send
 }
 let calib = loadCalib();
 
+// ---- MAZE CALIBRATION (persisted separately) --------------------------------
+function loadMazeCalib() {
+    try {
+        return JSON.parse(fs.readFileSync(MAZE_CALIB_FILE, 'utf8'));
+    } catch (_) {
+        return {};
+    }
+}
+let mazeState = maze.createMazeState();
+maze.applyMazeCalib(mazeState, loadMazeCalib());
+let mazeSaveTimer = null;
+function saveMazeCalib() {
+    clearTimeout(mazeSaveTimer);
+    mazeSaveTimer = setTimeout(() => {
+        fs.writeFile(MAZE_CALIB_FILE, JSON.stringify(maze.getMazeCalib(mazeState), null, 2), (err) => {
+            if (err) console.error('Could not save maze calibration:', err.message);
+        });
+    }, 500);
+}
+
 // ---------------------------- UDP -------------------------------------------
 const udp = dgram.createSocket('udp4');
 udp.on('error', (err) => console.error('UDP socket error:', err.message));
+
+// Listen for sensor packets from the ESP32 (9-byte, header 0x5A)
+udp.on('message', (msg) => {
+    if (msg.length !== 9 || msg[0] !== 0x5A) return;   // not a sensor packet
+    const pkt = maze.parseSensorPacket(msg);
+    if (!pkt) return;
+    maze.sensorUpdate(mazeState, pkt, Date.now());
+});
+
 udp.bind(0);                                          // bind now so the send queue can be inspected
 
 let lastUdpErrLog = 0;
@@ -122,11 +154,17 @@ const server = http.createServer((req, res) => {
         return;
     }
     const reqPath = String(req.url || '/').split('?')[0].split('#')[0];
+    let file = null;
     if (reqPath === '/' || reqPath === '/index.html' || reqPath === '/dashboard.html') {
-        fs.readFile(path.join(__dirname, 'dashboard.html'), (err, data) => {
+        file = 'dashboard.html';
+    } else if (reqPath === '/maze' || reqPath === '/maze.html') {
+        file = 'maze.html';
+    }
+    if (file) {
+        fs.readFile(path.join(__dirname, file), (err, data) => {
             if (err) {
                 res.writeHead(404, { 'Content-Type': 'text/plain' });
-                res.end('dashboard.html not found next to server.js');
+                res.end(file + ' not found next to server.js');
                 return;
             }
             res.writeHead(200, {
@@ -155,10 +193,112 @@ server.on('error', (err) => {
 
 // ---------------------------- WebSocket -------------------------------------
 const wss = new WebSocket.Server({
-    server,
+    noServer: true,
     maxPayload: 1024,
     verifyClient: (info) => hostOk(info.req) && originOk(info.req)
 });
+
+// ---- MAZE WebSocket (separate path, same "only one controller" rule) ---------
+const wsMaze = new WebSocket.Server({
+    noServer: true,
+    maxPayload: 4096,
+    verifyClient: (info) => hostOk(info.req) && originOk(info.req)
+});
+
+server.on('upgrade', (req, socket, head) => {
+    let pathname = '/';
+    try {
+        pathname = new URL(req.url, `http://${req.headers.host || 'localhost'}`).pathname;
+    } catch (_) {
+        pathname = String(req.url || '/').split('?')[0];
+    }
+
+    if (pathname === '/') {
+        wss.handleUpgrade(req, socket, head, (ws) => {
+            wss.emit('connection', ws, req);
+        });
+    } else if (pathname === '/maze-ws') {
+        wsMaze.handleUpgrade(req, socket, head, (ws) => {
+            wsMaze.emit('connection', ws, req);
+        });
+    } else {
+        socket.destroy();
+    }
+});
+let mazeController = null;
+let lastMazeTelemAt = 0;
+
+function sendMaze(ws, obj) {
+    if (ws && ws.readyState === WebSocket.OPEN && ws.bufferedAmount < 32768) ws.send(JSON.stringify(obj));
+}
+
+wsMaze.on('connection', (ws) => {
+    if (controller || mazeController) {
+        ws.close(4001, 'Another dashboard is already open');
+        return;
+    }
+    mazeController = ws;
+    resetControlState();
+    console.log('>>> Maze dashboard connected.');
+    // Send full grid snapshot + current telemetry
+    mazeState.fullSnapshotNeeded = true;
+    sendMazeFullState(ws);
+
+    ws.on('message', (raw) => {
+        let msg;
+        try { msg = JSON.parse(raw.toString()); } catch (_) { return; }
+        if (!msg || typeof msg !== 'object') return;
+
+        if (msg.type === 'intent') {
+            // Maze dashboard drives the robot the same way
+            const next = control.sanitizeIntent(msg);
+            const changed = !sameIntent(intent, next);
+            intent = next;
+            intentAt = Date.now();
+            if (changed) step(intentAt);
+        } else if (msg.type === 'reset') {
+            mazeState = maze.resetMaze(mazeState);
+            mazeState.fullSnapshotNeeded = true;
+            sendMazeFullState(ws);
+            console.log('Maze map reset.');
+        } else if (msg.type === 'spinCalib') {
+            const result = maze.toggleSpinCalib(mazeState);
+            if (!result.started && result.spinDegS !== null) {
+                saveMazeCalib();
+            }
+            sendMaze(ws, { type: 'spinCalib', active: mazeState.spinCalibActive, spinDegS: mazeState.spinDegS });
+        } else if (msg.type === 'toggleMap') {
+            mazeState.mapActive = !mazeState.mapActive;
+        } else if (msg.type === 'timer') {
+            if (msg.action === 'start') {
+                mazeState.timerStartAt = Date.now();
+                mazeState.timerRunning = true;
+            } else {
+                mazeState.timerRunning = false;
+                mazeState.timerStartAt = 0;
+            }
+        }
+    });
+
+    ws.on('close', () => {
+        if (mazeController !== ws) return;
+        mazeController = null;
+        resetControlState();
+        console.log('>>> Maze dashboard disconnected - sending STOP.');
+        sendStopBurst();
+    });
+    ws.on('error', (err) => console.error('Maze WS error:', err.message));
+});
+
+function sendMazeFullState(ws) {
+    const now = Date.now();
+    const telem = maze.getTelemetry(mazeState, now);
+    const gridCells = maze.getGridSnapshot(mazeState);
+    const beams = maze.getSensorBeams(mazeState);
+    const car = maze.getCarRect(mazeState);
+    sendMaze(ws, { type: 'fullState', telem, gridCells, beams, car });
+    mazeState.dirtyGrid.clear();
+}
 
 // ---------------------------- CONTROL STATE ---------------------------------
 let controller = null;      // the one dashboard that is allowed to drive
@@ -194,7 +334,7 @@ const calibText = () =>
     `spin L = ${calib.spinLeft}, spin R = ${calib.spinRight}, spin reversed = ${calib.spinInvert}`;
 
 wss.on('connection', (ws) => {
-    if (controller) {
+    if (controller || mazeController) {
         // A second dashboard would fight over the motors. First one wins.
         ws.close(4001, 'Another dashboard is already open');
         return;
@@ -243,7 +383,7 @@ wss.on('connection', (ws) => {
 function step(now) {
     const dt = Math.min(0.1, Math.max(0, (now - lastStepAt) / 1000));
     lastStepAt = now;
-    if (!controller) return;                          // idle: the ESP32 failsafe covers silence
+    if (!controller && !mazeController) return;          // idle: the ESP32 failsafe covers silence
 
     const fresh = intent !== null && (now - intentAt) <= INTENT_TIMEOUT_MS;
     const i = fresh ? intent : control.NEUTRAL;       // stale browser -> treat as "no input" (brake)
@@ -273,7 +413,11 @@ function step(now) {
     lastOut = { l, r, brake };
     sendFrame(l, r, brake);
 
-    if (now - lastTelemetryAt >= TELEMETRY_MS) {
+    // Feed PWM to the maze mapper (uses the actual post-ramp/deadband values)
+    mazeState.pwmL = l;
+    mazeState.pwmR = r;
+
+    if (controller && now - lastTelemetryAt >= TELEMETRY_MS) {
         lastTelemetryAt = now;
         const g = control.globalSides(control.effectiveSpeed(i), calib);
         send(controller, {
@@ -287,10 +431,33 @@ function step(now) {
         });
     }
 }
-setInterval(() => step(Date.now()), TICK_MS);
+setInterval(() => {
+    const now = Date.now();
+    step(now);
+    // Maze mapper tick (runs even if no maze dashboard is connected, so state stays fresh)
+    const dt = TICK_MS / 1000;
+    maze.mazeTick(mazeState, dt, now);
+    // Send maze telemetry
+    if (mazeController && now - lastMazeTelemAt >= MAZE_TELEM_MS) {
+        lastMazeTelemAt = now;
+        const telem = maze.getTelemetry(mazeState, now);
+        const beams = maze.getSensorBeams(mazeState);
+        const car = maze.getCarRect(mazeState);
+        let gridDelta = null;
+        if (mazeState.fullSnapshotNeeded) {
+            gridDelta = maze.getGridSnapshot(mazeState);
+            mazeState.fullSnapshotNeeded = false;
+            mazeState.dirtyGrid.clear();
+        } else {
+            gridDelta = maze.getDirtyGridCells(mazeState);
+        }
+        sendMaze(mazeController, { type: 'telem', telem, beams, car, gridDelta });
+    }
+}, TICK_MS);
 
 server.listen(PORT, HOST, () => {
     console.log(`Soccer controller running.  Open  http://localhost:${PORT}  in your browser.`);
+    console.log(`Maze mapper available at    http://localhost:${PORT}/maze`);
     console.log(`Sending frames to the ESP32 at ${ESP32_IP}:${ESP32_PORT}  (heartbeat ${TICK_MS} ms, instant on input change)`);
     console.log('Calibration: ' + calibText());
 });
@@ -299,6 +466,7 @@ server.listen(PORT, HOST, () => {
 function shutdown(code) {
     console.log('\nShutting down - sending STOP.');
     try { clearTimeout(saveTimer); fs.writeFileSync(CALIB_FILE, JSON.stringify(calib, null, 2)); } catch (_) {}
+    try { clearTimeout(mazeSaveTimer); fs.writeFileSync(MAZE_CALIB_FILE, JSON.stringify(maze.getMazeCalib(mazeState), null, 2)); } catch (_) {}
     sendStopBurst();
     setTimeout(() => process.exit(code), 120);
 }

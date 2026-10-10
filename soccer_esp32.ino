@@ -19,6 +19,7 @@
 // ============================================================================
 #include <WiFi.h>
 #include <WiFiUdp.h>
+#include "sensors.h"     // maze mapper: non-blocking HC-SR04 driver
 
 // ---------------------------- CONFIG ----------------------------------------
 // If the organisers assign you a Wi-Fi name / channel, put them here (and do not change them).
@@ -99,6 +100,7 @@ void setup() {
   ledcAttach(ENA, PWM_FREQ, PWM_RESOLUTION);
   ledcAttach(ENB, PWM_FREQ, PWM_RESOLUTION);
   brakeMotors();
+  sensorsInit();                                 // maze: set up HC-SR04 pins
 
   WiFi.mode(WIFI_AP);
   WiFi.softAP(AP_SSID, AP_PASS, AP_CHANNEL, 0, 2);
@@ -131,10 +133,12 @@ void loop() {
     applyFrame(newest);
     lastPacketTime = millis();
     failsafeActive = false;
+    sensorsSetRemote(udp.remoteIP(), udp.remotePort());  // maze: reply to this address
   } else if (!failsafeActive && millis() - lastPacketTime > TIMEOUT_MS) {
     brakeMotors();
     failsafeActive = true;
   }
 
+  sensorsTick(udp);                               // maze: non-blocking sensor scan
   delay(1);                                      // yield: no busy-wait, so the chip stays cool
 }
