@@ -269,6 +269,8 @@ wsMaze.on('connection', (ws) => {
             sendMaze(ws, { type: 'spinCalib', active: mazeState.spinCalibActive, spinDegS: mazeState.spinDegS });
         } else if (msg.type === 'toggleMap') {
             mazeState.mapActive = !mazeState.mapActive;
+        } else if (msg.type === 'manualTurn') {
+            maze.manualTurn(mazeState, msg.action);
         } else if (msg.type === 'timer') {
             if (msg.action === 'start') {
                 mazeState.timerStartAt = Date.now();

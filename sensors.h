@@ -75,18 +75,17 @@ static volatile uint32_t echoStart = 0;
 static volatile uint32_t echoWidth = 0;
 static volatile bool     echoDone  = false;
 
-// ISR: fires on both edges of the echo pin
+static volatile int activeEcho = ECHO_LEFT;
+
+// ISR: fires on both edges of the active echo pin
 static void IRAM_ATTR echoISR() {
     uint32_t now = micros();
     if (echoDone) return;
-    int state = digitalRead(echoPins[_sns.idx]);
-    if (state == HIGH) {
+    if (digitalRead(activeEcho) == HIGH) {
         echoStart = now;
-    } else {
-        if (echoStart > 0) {
-            echoWidth = now - echoStart;
-            echoDone = true;
-        }
+    } else if (echoStart > 0) {
+        echoWidth = now - echoStart;
+        echoDone = true;
     }
 }
 
@@ -157,6 +156,7 @@ void sensorsTick(WiFiUDP& udpOut) {
     case S_TRIG:
         if (elapsed >= SENSOR_TRIG_US) {
             digitalWrite(trigPins[_sns.idx], LOW);
+            activeEcho = echoPins[_sns.idx];
             // Attach interrupt on this sensor's echo pin
             attachInterrupt(digitalPinToInterrupt(echoPins[_sns.idx]), echoISR, CHANGE);
             _sns.phaseStartUs = nowUs;

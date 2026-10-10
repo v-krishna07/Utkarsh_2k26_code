@@ -921,6 +921,58 @@ function getCarRect(state) {
     }));
 }
 
+// ---- MANUAL TURN / CARDINAL SNAP (driver dedicated keys) -------------------
+function manualTurn(state, action) {
+    const snap = snapHeading(state.heading);
+    let newAxis = snap.axis;
+    let label = '';
+
+    if (action === 'left') {
+        newAxis = mod360(snap.axis - 90);
+        label = 'TURN LEFT';
+    } else if (action === 'right') {
+        newAxis = mod360(snap.axis + 90);
+        label = 'TURN RIGHT';
+    } else if (action === 'uturn' || action === 'back') {
+        newAxis = mod360(snap.axis + 180);
+        label = 'U-TURN';
+    } else if (action === 'north') {
+        newAxis = 0;
+        label = 'FACING NORTH';
+    } else if (action === 'east') {
+        newAxis = 90;
+        label = 'FACING EAST';
+    } else if (action === 'south') {
+        newAxis = 180;
+        label = 'FACING SOUTH';
+    } else if (action === 'west') {
+        newAxis = 270;
+        label = 'FACING WEST';
+    }
+
+    state.heading = newAxis;
+    state.prevSnapName = snapHeading(newAxis).name;
+    state.laneCentreSet = false;
+
+    // Create a node at the turn point
+    const nodeId = state.nextNodeId++;
+    state.nodes.push({
+        id: nodeId,
+        x: state.x,
+        y: state.y,
+        isJunction: false,
+        isDeadEnd: false,
+    });
+    if (state.lastNodeId >= 0 && nodeId !== state.lastNodeId) {
+        state.edges.push({ from: state.lastNodeId, to: nodeId });
+    }
+    state.lastNodeId = nodeId;
+    state.distSinceNode = 0;
+
+    if (label) addTurnLog(state, label);
+    return { heading: state.heading, headingName: state.prevSnapName };
+}
+
 module.exports = {
     MAZE_CONFIG,
     createMazeState,
@@ -930,6 +982,7 @@ module.exports = {
     mazeTick,
     resetMaze,
     toggleSpinCalib,
+    manualTurn,
     getGridSnapshot,
     getDirtyGridCells,
     getTelemetry,
@@ -945,3 +998,4 @@ module.exports = {
     median5,
     addTurnLog,
 };
+

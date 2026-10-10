@@ -3,299 +3,547 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Maze Mapper</title>
+<title>Maze Navigator & Mapper</title>
 <style>
   :root {
-    --bg: #0a0c14; --panel: #141824; --panel2: #1c2238; --line: #2a3050;
-    --text: #e8ecf8; --dim: #7a84a8; --accent: #3ddc97; --warn: #ffb020; --bad: #ff5a5f;
-    --blue: #5aa9ff; --orange: #ff8c42; --purple: #b088f9;
+    --bg: #090d16;
+    --card: #131a29;
+    --card-border: #1f2a40;
+    --text: #f1f5f9;
+    --dim: #94a3b8;
+    --accent: #38bdf8;
+    --green: #22c55e;
+    --yellow: #eab308;
+    --red: #ef4444;
+    --orange: #f97316;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
-    background: var(--bg); color: var(--text);
-    font-family: "Segoe UI", system-ui, -apple-system, Roboto, Arial, sans-serif;
-    font-size: 15px; line-height: 1.4;
-    display: flex; height: 100vh; overflow: hidden;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    display: flex;
+    height: 100vh;
+    overflow: hidden;
   }
+
+  /* SIDEBAR */
   #sidebar {
-    width: 320px; min-width: 260px; background: var(--panel);
-    border-right: 1px solid var(--line); display: flex; flex-direction: column;
-    overflow-y: auto; padding: 12px;
-  }
-  #mapArea { flex: 1; position: relative; }
-  canvas { display: block; width: 100%; height: 100%; background: #060810; }
-
-  .section { margin-bottom: 10px; padding: 10px; background: var(--panel2); border-radius: 10px; border: 1px solid var(--line); }
-  .section h3 { font-size: .82rem; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 6px; }
-
-  .header { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
-  .header h1 { font-size: 1.2rem; flex: 1; }
-  .pill {
-    padding: 3px 10px; border-radius: 999px; font-weight: 700; font-size: .82rem;
-    border: 2px solid var(--line); background: var(--panel);
-  }
-  .pill.ok  { border-color: var(--accent); color: var(--accent); }
-  .pill.bad { border-color: var(--bad); color: var(--bad); }
-
-  #clock {
-    font-family: Consolas, "Courier New", monospace; font-size: 1.8rem; font-weight: 800;
-    text-align: center; padding: 4px 0; border-radius: 8px; background: #0a0e18;
-    border: 2px solid var(--line); letter-spacing: 2px;
-  }
-  #clock.run  { border-color: var(--accent); color: var(--accent); }
-  #clock.done { border-color: var(--bad); color: var(--bad); animation: blink .7s infinite; }
-  @keyframes blink { 50% { background: #2a0a0c; } }
-
-  .sensor-row { display: flex; gap: 6px; margin: 4px 0; align-items: center; }
-  .sensor-label { width: 18px; font-weight: 800; font-size: .9rem; }
-  .sensor-val { flex: 1; font-family: Consolas, monospace; font-size: 1.05rem; text-align: right; }
-  .sensor-bar { flex: 2; height: 14px; background: #0a0e18; border-radius: 7px; overflow: hidden; border: 1px solid var(--line); }
-  .sensor-fill { height: 100%; background: var(--accent); transition: width 80ms; }
-
-  .facing {
-    text-align: center; font-size: 1.6rem; font-weight: 800; padding: 6px 0;
-    background: linear-gradient(135deg, #1a1e30, #0a0e18); border-radius: 8px;
-    border: 1px solid var(--line); margin: 6px 0;
-  }
-  .facing .dir { color: var(--accent); }
-  .facing .deg { font-size: .85rem; color: var(--dim); margin-left: 6px; }
-
-  .info-row { display: flex; justify-content: space-between; padding: 2px 0; font-size: .88rem; }
-  .info-row .lbl { color: var(--dim); }
-  .info-row .val { font-family: Consolas, monospace; }
-
-  #sensorStatus { font-size: .82rem; padding: 4px 6px; border-radius: 6px; text-align: center; font-weight: 700; }
-  #sensorStatus.ok { background: rgba(61,220,151,.12); color: var(--accent); }
-  #sensorStatus.stale { background: rgba(255,90,95,.15); color: var(--bad); }
-
-  #turnLog {
-    background: #0a0e18; color: #8cf0cf; font-family: Consolas, monospace; font-size: .78rem;
-    padding: 6px; border-radius: 6px; height: 120px; overflow-y: auto; white-space: pre-wrap;
+    width: 380px;
+    min-width: 320px;
+    background: var(--card);
+    border-right: 1px solid var(--card-border);
+    display: flex;
+    flex-direction: column;
+    padding: 16px;
+    gap: 12px;
+    overflow-y: auto;
   }
 
-  .motor { display: flex; align-items: center; gap: 6px; margin: 3px 0; }
-  .motor .name { width: 14px; font-weight: 800; font-size: .85rem; }
-  .motor .val { width: 40px; text-align: right; font-family: Consolas, monospace; font-size: .92rem; }
-  .mbar { position: relative; flex: 1; height: 14px; background: #0a0e18; border-radius: 7px; overflow: hidden; border: 1px solid var(--line); }
-  .mbar::after { content: ""; position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; background: #445; }
-  .mfill { position: absolute; top: 0; bottom: 0; background: var(--accent); }
-  .mfill.rev { background: var(--warn); }
+  .header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .header h1 {
+    font-size: 1.15rem;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .badge {
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .badge.connected { background: rgba(34, 197, 94, 0.15); color: var(--green); border: 1px solid var(--green); }
+  .badge.disconnected { background: rgba(239, 68, 68, 0.15); color: var(--red); border: 1px solid var(--red); }
 
-  button.act {
-    font: inherit; font-weight: 700; font-size: .82rem; color: var(--text); cursor: pointer;
-    background: var(--panel); border: 2px solid var(--line); border-radius: 8px; padding: 6px 10px;
+  /* TIMER */
+  .timer-card {
+    background: #060911;
+    border: 1px solid var(--card-border);
+    border-radius: 12px;
+    padding: 10px 14px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .timer-display {
+    font-family: Consolas, "Courier New", monospace;
+    font-size: 2rem;
+    font-weight: 900;
+    letter-spacing: 2px;
+    color: var(--text);
+  }
+  .timer-display.running { color: var(--accent); }
+  .timer-display.over { color: var(--red); animation: blink 0.8s infinite; }
+  @keyframes blink { 50% { opacity: 0.4; } }
+
+  .btn-timer {
+    background: #1e293b;
+    border: 1px solid var(--card-border);
+    color: var(--text);
+    padding: 8px 14px;
+    border-radius: 8px;
+    font-weight: 700;
+    font-size: 0.85rem;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .btn-timer:hover { background: #334155; }
+  .btn-timer.active { background: var(--red); color: #fff; border-color: var(--red); }
+
+  /* SENSORS: 3 BIG CLEAN CARDS */
+  .section-label {
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--dim);
+    margin-bottom: 2px;
+  }
+  .sensors-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 8px;
+  }
+  .sensor-card {
+    background: #070b14;
+    border: 2px solid var(--card-border);
+    border-radius: 10px;
+    padding: 8px;
+    text-align: center;
+    transition: border-color 0.15s;
+  }
+  .sensor-card .name {
+    font-size: 0.7rem;
+    font-weight: 800;
+    color: var(--dim);
+    letter-spacing: 0.06em;
+  }
+  .sensor-card .val {
+    font-family: Consolas, monospace;
+    font-size: 1.25rem;
+    font-weight: 900;
+    margin: 4px 0 2px 0;
+  }
+  .sensor-card.safe { border-color: var(--green); }
+  .sensor-card.safe .val { color: var(--green); }
+  .sensor-card.warn { border-color: var(--yellow); }
+  .sensor-card.warn .val { color: var(--yellow); }
+  .sensor-card.close { border-color: var(--red); background: rgba(239, 68, 68, 0.1); }
+  .sensor-card.close .val { color: var(--red); }
+  .sensor-card.open { border-color: var(--accent); }
+  .sensor-card.open .val { color: var(--accent); font-size: 1.05rem; }
+
+  /* HEADING CARD */
+  .heading-card {
+    background: #070b14;
+    border: 1px solid var(--card-border);
+    border-radius: 10px;
+    padding: 10px 14px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .heading-title {
+    font-size: 0.8rem;
+    color: var(--dim);
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+  .heading-val {
+    font-size: 1.25rem;
+    font-weight: 900;
+    color: var(--accent);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  /* TURN BUTTONS */
+  .turn-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 6px;
+  }
+  .btn-turn {
+    background: #151e2e;
+    border: 1px solid #24324a;
+    color: var(--text);
+    padding: 10px 6px;
+    border-radius: 8px;
+    font-size: 0.82rem;
+    font-weight: 700;
+    cursor: pointer;
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    transition: all 0.15s;
+  }
+  .btn-turn:hover {
+    background: #1e2b42;
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .btn-turn:active { transform: scale(0.96); }
+  .btn-turn .key {
+    font-size: 0.65rem;
+    color: var(--dim);
+    font-weight: normal;
+  }
+
+  /* CARDINAL SNAP */
+  .cardinal-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr 1fr;
+    gap: 6px;
+  }
+  .btn-cardinal {
+    background: #0d1422;
+    border: 1px solid var(--card-border);
+    color: var(--dim);
+    padding: 6px;
+    border-radius: 6px;
+    font-size: 0.78rem;
+    font-weight: 700;
+    cursor: pointer;
+    text-align: center;
+  }
+  .btn-cardinal:hover {
+    border-color: var(--accent);
+    color: var(--text);
+  }
+
+  /* E-STOP & RESET */
+  #btnEstop {
+    background: #450a0a;
+    border: 2px solid var(--red);
+    color: #fca5a5;
+    padding: 12px;
+    border-radius: 10px;
+    font-size: 1rem;
+    font-weight: 900;
+    text-align: center;
+    cursor: pointer;
+    letter-spacing: 0.04em;
+    transition: all 0.15s;
+    user-select: none;
+  }
+  #btnEstop.active {
+    background: var(--red);
+    color: #fff;
+    animation: blink 0.6s infinite;
+  }
+  .action-row {
+    display: flex;
+    gap: 8px;
+  }
+  .btn-sub {
+    flex: 1;
+    background: #131a29;
+    border: 1px solid var(--card-border);
+    color: var(--dim);
+    padding: 8px;
+    border-radius: 8px;
+    font-size: 0.8rem;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .btn-sub:hover { border-color: var(--accent); color: var(--text); }
+
+  /* LOG */
+  .log-box {
+    background: #060911;
+    border: 1px solid var(--card-border);
+    border-radius: 8px;
+    padding: 8px 10px;
+    height: 120px;
+    overflow-y: auto;
+    font-family: Consolas, monospace;
+    font-size: 0.78rem;
+    color: #93c5fd;
+    white-space: pre-wrap;
+    line-height: 1.5;
+  }
+
+  /* HELP TABLE */
+  .help-table {
     width: 100%;
+    font-size: 0.75rem;
+    color: var(--dim);
+    border-collapse: collapse;
   }
-  button.act:hover { border-color: var(--accent); }
-  button.act.on { background: var(--accent); color: #0b1a12; border-color: var(--accent); }
-  button.act.warn { background: var(--bad); color: #fff; border-color: var(--bad); }
-
-  .btn-row { display: flex; gap: 6px; margin: 4px 0; }
-  .btn-row button { flex: 1; }
-
-  #estop {
-    width: 100%; padding: 10px; font-size: 1rem; font-weight: 800;
-    background: #3a0a0e; border: 2px solid var(--bad); border-radius: 8px;
-    color: var(--bad); cursor: pointer; margin-bottom: 6px;
+  .help-table td { padding: 2px 0; }
+  kbd {
+    background: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 4px;
+    padding: 1px 5px;
+    font-family: monospace;
+    color: #e2e8f0;
+    font-size: 0.8em;
   }
-  #estop.on { background: var(--bad); color: #fff; animation: blink 0.8s infinite; }
 
-  table.keys { width: 100%; border-collapse: collapse; font-size: .78rem; }
-  table.keys td { padding: 2px 4px; border-top: 1px solid var(--line); }
-  table.keys td:first-child { white-space: nowrap; width: 35%; }
-  kbd { background: var(--panel); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; font-family: Consolas, monospace; font-size: .82em; }
+  /* MAP CANVAS */
+  #mapArea {
+    flex: 1;
+    position: relative;
+    background: #060911;
+  }
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
 
-  .legend { display: flex; flex-wrap: wrap; gap: 8px; font-size: .75rem; margin-top: 4px; }
-  .legend span { display: flex; align-items: center; gap: 3px; }
-  .legend .swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+  /* OVERLAY ALERTS */
+  #deadEndBanner {
+    display: none;
+    position: absolute;
+    top: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #ef4444;
+    color: #fff;
+    font-weight: 900;
+    font-size: 1.1rem;
+    padding: 8px 24px;
+    border-radius: 8px;
+    box-shadow: 0 4px 20px rgba(239, 68, 68, 0.5);
+    letter-spacing: 0.05em;
+    animation: blink 0.7s infinite;
+    pointer-events: none;
+  }
 </style>
 </head>
 <body>
 
 <div id="sidebar">
   <div class="header">
-    <h1>🏁 Maze Mapper</h1>
-    <div id="link" class="pill bad">offline</div>
+    <h1>🏁 Maze Navigator</h1>
+    <div id="linkBadge" class="badge disconnected">Offline</div>
   </div>
 
-  <div class="section">
-    <h3>Timer (T)</h3>
-    <div id="clock">3:00</div>
-  </div>
-
-  <div class="section">
-    <h3>Sensors</h3>
-    <div id="sensorStatus" class="stale">NO SENSOR DATA</div>
-    <div class="sensor-row"><span class="sensor-label" style="color:#5aa9ff">L</span><div class="sensor-bar"><div class="sensor-fill" id="barSL"></div></div><span class="sensor-val" id="valSL">—</span></div>
-    <div class="sensor-row"><span class="sensor-label" style="color:#3ddc97">F</span><div class="sensor-bar"><div class="sensor-fill" id="barSF" style="background:var(--accent)"></div></div><span class="sensor-val" id="valSF">—</span></div>
-    <div class="sensor-row"><span class="sensor-label" style="color:#ff8c42">R</span><div class="sensor-bar"><div class="sensor-fill" id="barSR" style="background:var(--orange)"></div></div><span class="sensor-val" id="valSR">—</span></div>
-  </div>
-
-  <div class="section">
-    <div class="facing">FACING <span class="dir" id="facingDir">NORTH</span><span class="deg" id="facingDeg">0.0°</span></div>
-  </div>
-
-  <div class="section">
-    <h3>Motors (PWM sent)</h3>
-    <div class="motor"><span class="name">L</span><div class="mbar"><div class="mfill" id="mbarL"></div></div><span class="val" id="mvalL">0</span></div>
-    <div class="motor"><span class="name">R</span><div class="mbar"><div class="mfill" id="mbarR"></div></div><span class="val" id="mvalR">0</span></div>
-  </div>
-
-  <div class="section">
-    <h3>Calibration</h3>
-    <div class="info-row"><span class="lbl">V_FULL</span><span class="val" id="valVFull">40.0</span></div>
-    <div class="info-row"><span class="lbl">SPIN_DEG_S</span><span class="val" id="valSpinDeg">180.0</span></div>
-    <div class="info-row"><span class="lbl">Position</span><span class="val" id="valPos">0, 0</span></div>
-    <div class="info-row"><span class="lbl">Distance</span><span class="val" id="valDist">0 cm</span></div>
-    <div class="btn-row">
-      <button class="act" id="btnSpinCalib">Spin Calib [K]</button>
-      <button class="act" id="btnMapToggle">Map Active</button>
+  <!-- MATCH TIMER -->
+  <div class="timer-card">
+    <div>
+      <div class="section-label">Competition Time</div>
+      <div id="clockDisplay" class="timer-display">03:00</div>
     </div>
-    <button class="act" id="btnReset" style="margin-top:4px">Reset Map [R]</button>
+    <button id="btnTimer" class="btn-timer">Start [T]</button>
   </div>
 
-  <div class="section">
-    <button id="estop">E-STOP [Space]</button>
+  <!-- 3 ULTRASONIC SENSORS -->
+  <div>
+    <div class="section-label">Live Ultrasonic Sensors</div>
+    <div class="sensors-grid">
+      <div id="cardSL" class="sensor-card">
+        <div class="name">LEFT</div>
+        <div id="valSL" class="val">—</div>
+      </div>
+      <div id="cardSF" class="sensor-card">
+        <div class="name">FRONT</div>
+        <div id="valSF" class="val">—</div>
+      </div>
+      <div id="cardSR" class="sensor-card">
+        <div class="name">RIGHT</div>
+        <div id="valSR" class="val">—</div>
+      </div>
+    </div>
   </div>
 
-  <div class="section">
-    <h3>Turn Log</h3>
-    <div id="turnLog"></div>
+  <!-- HEADING -->
+  <div class="heading-card">
+    <div>
+      <div class="heading-title">Car Heading</div>
+      <div id="headingText" class="heading-val">⬆ NORTH (0°)</div>
+    </div>
+    <div id="distText" style="font-family:Consolas,monospace; font-size:0.85rem; color:var(--dim);">0 cm</div>
   </div>
 
-  <div class="section">
-    <h3>Controls</h3>
-    <table class="keys">
-      <tr><td><kbd>W</kbd> / <kbd>S</kbd></td><td>Forward / Backward</td></tr>
-      <tr><td><kbd>A</kbd> / <kbd>D</kbd></td><td>Spin left / right</td></tr>
-      <tr><td><kbd>Shift</kbd> (hold)</td><td>Boost</td></tr>
-      <tr><td><kbd>Space</kbd></td><td>Emergency stop</td></tr>
-      <tr><td><kbd>Q</kbd> / <kbd>E</kbd></td><td>Speed −10 / +10</td></tr>
-      <tr><td><kbd>K</kbd></td><td>Spin calibration toggle</td></tr>
-      <tr><td><kbd>R</kbd></td><td>Reset map</td></tr>
-      <tr><td><kbd>T</kbd></td><td>Start / reset timer</td></tr>
+  <!-- DEDICATED TURN BUTTONS -->
+  <div>
+    <div class="section-label">Mark Turn / Direction</div>
+    <div class="turn-actions">
+      <button class="btn-turn" id="btnTurnL">
+        <span>↰ Turn Left</span>
+        <span class="key">Press J</span>
+      </button>
+      <button class="btn-turn" id="btnTurnU">
+        <span>⮌ U-Turn</span>
+        <span class="key">Press U</span>
+      </button>
+      <button class="btn-turn" id="btnTurnR">
+        <span>↱ Turn Right</span>
+        <span class="key">Press L</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- DIRECT CARDINAL SNAPS -->
+  <div>
+    <div class="section-label">Snap Facing</div>
+    <div class="cardinal-row">
+      <button class="btn-cardinal" id="snapN">North [1]</button>
+      <button class="btn-cardinal" id="snapE">East [2]</button>
+      <button class="btn-cardinal" id="snapS">South [3]</button>
+      <button class="btn-cardinal" id="snapW">West [4]</button>
+    </div>
+  </div>
+
+  <!-- E-STOP -->
+  <button id="btnEstop">EMERGENCY BRAKE [Space hold]</button>
+
+  <!-- ACTIONS -->
+  <div class="action-row">
+    <button class="btn-sub" id="btnResetMap">Reset Map [R]</button>
+    <button class="btn-sub" id="btnSpinCalib">Spin Calib [K]</button>
+  </div>
+
+  <!-- TURN LOG -->
+  <div>
+    <div class="section-label">Move & Junction Log</div>
+    <div id="logBox" class="log-box"></div>
+  </div>
+
+  <!-- SHORTCUTS CHEATSHEET -->
+  <div>
+    <div class="section-label">Quick Driving Keys</div>
+    <table class="help-table">
+      <tr><td><kbd>W</kbd> / <kbd>S</kbd> Forward / Reverse</td><td><kbd>A</kbd> / <kbd>D</kbd> Spin in place</td></tr>
+      <tr><td><kbd>J</kbd> / <kbd>L</kbd> Record Left / Right turn</td><td><kbd>U</kbd> Record U-Turn</td></tr>
+      <tr><td><kbd>Space</kbd> Emergency brake (hold)</td><td><kbd>Shift</kbd> Speed boost</td></tr>
+      <tr><td><kbd>Q</kbd> / <kbd>E</kbd> Slower / Faster</td><td><kbd>T</kbd> Timer Start / Reset</td></tr>
     </table>
-  </div>
-
-  <div class="section">
-    <h3>Legend</h3>
-    <div class="legend">
-      <span><span class="swatch" style="background:#1a3020"></span> Free</span>
-      <span><span class="swatch" style="background:#e8ecf8"></span> Wall</span>
-      <span><span class="swatch" style="background:#ff8c42"></span> Unexplored</span>
-      <span><span class="swatch" style="background:#3ddc97"></span> Explored</span>
-      <span><span class="swatch" style="background:#b088f9"></span> Trail</span>
-      <span><span class="swatch" style="background:#5aa9ff"></span> Graph</span>
-    </div>
   </div>
 </div>
 
+<!-- MAP CANVAS AREA -->
 <div id="mapArea">
+  <div id="deadEndBanner">⚠️ DEAD END DETECTED — REVERSE [S]</div>
   <canvas id="mapCanvas"></canvas>
 </div>
 
 <script>
-(function () {
+(function() {
   'use strict';
 
-  // ---- CONFIG ---------------------------------------------------------------
   var MATCH_MS = 3 * 60 * 1000;
-  var HEARTBEAT_MS = 40;
-  var MAX_WS_BACKLOG = 512;
-  var SPEED_DEFAULT = 140;
-  var SPEED_MIN = 30;
-  var SPEED_MAX = 255;
   var WS_URL = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/maze-ws';
 
-  // ---- ELEMENTS -------------------------------------------------------------
-  var $ = function (id) { return document.getElementById(id); };
+  var $ = function(id) { return document.getElementById(id); };
   var canvas = $('mapCanvas');
   var ctx = canvas.getContext('2d');
 
-  // ---- STATE ----------------------------------------------------------------
   var ws = null;
-  var speed = SPEED_DEFAULT, estop = false, boostKey = false;
-  var keyHeld = {};           // 'w'|'s'|'a'|'d' -> true
+  var speed = 140;
+  var estop = false;
+  var boostKey = false;
+  var spaceHeld = false;
+  var keyHeld = {};
   var lastTelem = null;
-  var gridCells = [];         // { x, y, v }  (log-odds)
+  var gridCells = [];
+  var gridMap = {};
   var lastBeams = [];
   var lastCar = [];
-  var wsLoggedDown = false;
-
-  // Timer (client-side mirror)
   var timer = { state: 'idle', startAt: 0 };
 
-  // ---- INTENT ---------------------------------------------------------------
+  // ---- INTENT & DRIVING ----
   function readInput() {
     var thr = (keyHeld.w ? 1 : 0) - (keyHeld.s ? 1 : 0);
     var str = (keyHeld.d ? 1 : 0) - (keyHeld.a ? 1 : 0);
     return { thr: thr, str: str };
   }
-  function wsReady() { return ws && ws.readyState === 1 && !(ws.bufferedAmount > MAX_WS_BACKLOG); }
+
+  function wsReady() {
+    return ws && ws.readyState === WebSocket.OPEN && ws.bufferedAmount < 4096;
+  }
+
   function sendIntent() {
     if (!wsReady()) return;
     var inp = readInput();
     ws.send(JSON.stringify({
-      type: 'intent', thr: inp.thr, str: inp.str,
-      speed: speed, turn: 0, boost: boostKey,
-      estop: estop, smooth: true, brake: true
+      type: 'intent',
+      thr: inp.thr,
+      str: inp.str,
+      speed: speed,
+      turn: 0,
+      boost: boostKey,
+      estop: estop,
+      smooth: true,
+      brake: true
     }));
   }
 
-  // ---- WEBSOCKET ------------------------------------------------------------
-  function setStatus(ok, text) {
-    var el = $('link');
-    el.textContent = text;
-    el.className = 'pill ' + (ok ? 'ok' : 'bad');
+  function sendTurn(action) {
+    if (!wsReady()) return;
+    ws.send(JSON.stringify({ type: 'manualTurn', action: action }));
   }
-  function connectWS() {
-    if (location.protocol !== 'http:' && location.protocol !== 'https:') {
-      setStatus(false, 'Use http://localhost:8080/maze');
+
+  // ---- WEBSOCKET CONNECTION ----
+  function connect() {
+    try {
+      ws = new WebSocket(WS_URL);
+    } catch (_) {
+      setTimeout(connect, 2000);
       return;
     }
-    try { ws = new WebSocket(WS_URL); } catch (e) { setTimeout(connectWS, 2000); return; }
-    ws.onopen = function () {
-      wsLoggedDown = false;
-      setStatus(true, 'connected');
+
+    ws.onopen = function() {
+      $('linkBadge').textContent = 'Connected';
+      $('linkBadge').className = 'badge connected';
       sendIntent();
     };
-    ws.onmessage = function (ev) {
+
+    ws.onmessage = function(ev) {
       var m;
       try { m = JSON.parse(ev.data); } catch (_) { return; }
       if (!m) return;
+
       if (m.type === 'telem') {
         lastTelem = m.telem;
         lastBeams = m.beams || [];
         lastCar = m.car || [];
         if (m.gridDelta && m.gridDelta.length > 0) mergeGrid(m.gridDelta);
+        updateUI();
       } else if (m.type === 'fullState') {
         lastTelem = m.telem;
         lastBeams = m.beams || [];
         lastCar = m.car || [];
         gridCells = m.gridCells || [];
-        rebuildGridMap();
-      } else if (m.type === 'spinCalib') {
-        // handled via telem
+        rebuildGrid();
+        updateUI();
       }
     };
-    ws.onclose = function (ev) {
-      var busy = ev && ev.code === 4001;
-      setStatus(false, busy ? 'another maze open' : 'offline');
-      if (!wsLoggedDown) { wsLoggedDown = true; }
-      setTimeout(connectWS, 2000);
+
+    ws.onclose = function(ev) {
+      var msg = ev && ev.code === 4001 ? 'Occupied' : 'Offline';
+      $('linkBadge').textContent = msg;
+      $('linkBadge').className = 'badge disconnected';
+      setTimeout(connect, 2000);
     };
-    ws.onerror = function () {};
+
+    ws.onerror = function() {};
   }
 
-  // ---- GRID MAP (for fast rendering) ----------------------------------------
-  var gridMap = {};   // "x,y" -> logOdd
-  function rebuildGridMap() {
+  // ---- GRID REBUILD & MERGE ----
+  function rebuildGrid() {
     gridMap = {};
     for (var i = 0; i < gridCells.length; i++) {
       var c = gridCells[i];
       gridMap[c.x + ',' + c.y] = c.v;
     }
   }
+
   function mergeGrid(delta) {
     for (var i = 0; i < delta.length; i++) {
       var c = delta[i];
@@ -303,105 +551,101 @@
     }
   }
 
-  // ---- UI -------------------------------------------------------------------
-  function renderSidebar() {
+  // ---- UI UPDATES ----
+  function updateUI() {
     var t = lastTelem;
     if (!t) return;
 
-    // Sensor values
-    setSensorBar('SL', t.distL, 100);
-    setSensorBar('SF', t.distF, 100);
-    setSensorBar('SR', t.distR, 100);
+    // Sensors
+    renderSensorCard('SL', t.distL);
+    renderSensorCard('SF', t.distF);
+    renderSensorCard('SR', t.distR);
 
-    // Sensor status
-    var ssEl = $('sensorStatus');
-    if (t.sensorStale) {
-      ssEl.textContent = 'NO SENSOR DATA';
-      ssEl.className = 'stale';
-    } else {
-      var age = t.sensorAge;
-      ssEl.textContent = 'Sensor OK (' + age + ' ms ago)';
-      ssEl.className = 'ok';
-    }
+    // Heading badge
+    var dirIcons = { NORTH: '⬆', EAST: '➡', SOUTH: '⬇', WEST: '⬅' };
+    var icon = dirIcons[t.headingName] || '⬆';
+    $('headingText').textContent = icon + ' ' + t.headingName + ' (' + t.heading + '°)';
+    $('distText').textContent = t.totalDist + ' cm';
 
-    // Facing
-    $('facingDir').textContent = t.headingName;
-    $('facingDeg').textContent = t.heading + '°';
-
-    // Motors
-    setMotorBar('L', t.pwmL);
-    setMotorBar('R', t.pwmR);
-
-    // Calibration
-    $('valVFull').textContent = t.vFull;
-    $('valSpinDeg').textContent = t.spinDegS;
-    $('valPos').textContent = t.x + ', ' + t.y;
-    $('valDist').textContent = t.totalDist + ' cm';
-
-    // Map toggle
-    var btn = $('btnMapToggle');
-    btn.textContent = t.mapActive ? 'Map Active' : 'Map Paused';
-    btn.classList.toggle('on', t.mapActive);
-
-    // Spin calib
-    var sc = $('btnSpinCalib');
-    sc.classList.toggle('on', t.spinCalibActive);
-    sc.textContent = t.spinCalibActive ? 'Spin Calib ▶ K to finish' : 'Spin Calib [K]';
+    // Dead end alert banner
+    var isDeadEnd = t.distF !== null && t.distF < 16 &&
+                    t.distL !== null && t.distL < 40 &&
+                    t.distR !== null && t.distR < 40;
+    $('deadEndBanner').style.display = isDeadEnd ? 'block' : 'none';
 
     // Turn log
     if (t.turnLog) {
-      var el = $('turnLog');
-      var html = '';
+      var lines = [];
       for (var i = 0; i < t.turnLog.length; i++) {
-        html += t.turnLog[i].time + '  ' + t.turnLog[i].text + '\n';
+        lines.push(t.turnLog[i].time + '  ' + t.turnLog[i].text);
       }
-      el.textContent = html;
-      el.scrollTop = el.scrollHeight;
+      var box = $('logBox');
+      box.textContent = lines.join('\n');
+      box.scrollTop = box.scrollHeight;
     }
+
+    // Spin calib button status
+    $('btnSpinCalib').textContent = t.spinCalibActive ? 'Spin 360° ▶ [K]' : 'Spin Calib [K]';
+    $('btnSpinCalib').style.borderColor = t.spinCalibActive ? 'var(--green)' : 'var(--card-border)';
   }
 
-  function setSensorBar(suffix, val, maxCm) {
-    var barEl = $('bar' + suffix);
-    var valEl = $('val' + suffix);
-    if (val === null || val === undefined) {
-      barEl.style.width = '0%';
-      valEl.textContent = '—';
+  function renderSensorCard(id, dist) {
+    var card = $('card' + id);
+    var valEl = $('val' + id);
+
+    if (dist === null || dist === undefined) {
+      // Clear / Open reading (>100 cm or no echo)
+      card.className = 'sensor-card open';
+      valEl.textContent = 'Clear';
     } else {
-      barEl.style.width = Math.min(100, val / maxCm * 100) + '%';
-      valEl.textContent = val.toFixed(1) + ' cm';
+      valEl.textContent = dist.toFixed(1) + ' cm';
+      if (dist < 15) {
+        card.className = 'sensor-card close';
+      } else if (dist < 32) {
+        card.className = 'sensor-card warn';
+      } else {
+        card.className = 'sensor-card safe';
+      }
     }
   }
 
-  function setMotorBar(side, v) {
-    var bar = $('mbar' + side);
-    var val = $('mval' + side);
-    var w = Math.min(100, Math.abs(v) / 255 * 50);
-    bar.style.width = w + '%';
-    bar.style.left = (v >= 0 ? 50 : 50 - w) + '%';
-    bar.classList.toggle('rev', v < 0);
-    val.textContent = v;
-  }
+  // ---- TIMER ----
+  function updateClock() {
+    var el = $('clockDisplay');
+    var btn = $('btnTimer');
 
-  // ---- TIMER ----------------------------------------------------------------
-  function renderClock() {
-    var el = $('clock');
     if (timer.state === 'run') {
       var left = MATCH_MS - (Date.now() - timer.startAt);
-      if (left <= 0) { timer.state = 'done'; }
-      el.className = 'run';
-      el.textContent = fmtMs(Math.max(0, left));
+      if (left <= 0) {
+        timer.state = 'done';
+        el.className = 'timer-display over';
+        el.textContent = '00:00';
+      } else {
+        el.className = 'timer-display running';
+        el.textContent = fmtMs(left);
+      }
+      btn.textContent = 'Stop [T]';
+      btn.classList.add('active');
     } else if (timer.state === 'done') {
-      el.className = 'done';
-      el.textContent = '0:00';
+      el.className = 'timer-display over';
+      el.textContent = '00:00';
+      btn.textContent = 'Reset [T]';
+      btn.classList.remove('active');
     } else {
-      el.className = '';
-      el.textContent = fmtMs(MATCH_MS);
+      el.className = 'timer-display';
+      el.textContent = '03:00';
+      btn.textContent = 'Start [T]';
+      btn.classList.remove('active');
     }
   }
+
   function fmtMs(ms) {
     var s = Math.ceil(ms / 1000);
-    return Math.floor(s / 60) + ':' + ('0' + (s % 60)).slice(-2);
+    var m = Math.floor(s / 60);
+    var sec = s % 60;
+    return (m < 10 ? '0' : '') + m + ':' + (sec < 10 ? '0' : '') + sec;
   }
+
   function toggleTimer() {
     if (timer.state === 'idle') {
       timer.state = 'run';
@@ -411,15 +655,18 @@
       timer.state = 'idle';
       if (wsReady()) ws.send(JSON.stringify({ type: 'timer', action: 'stop' }));
     }
+    updateClock();
   }
 
-  // ---- CANVAS RENDERING -----------------------------------------------------
+  // ---- MAP CANVAS RENDERING ----
   var dpr = window.devicePixelRatio || 1;
 
   function resizeCanvas() {
     var area = $('mapArea');
-    canvas.width = area.clientWidth * dpr;
-    canvas.height = area.clientHeight * dpr;
+    if (canvas.width !== area.clientWidth * dpr || canvas.height !== area.clientHeight * dpr) {
+      canvas.width = area.clientWidth * dpr;
+      canvas.height = area.clientHeight * dpr;
+    }
   }
 
   function renderMap() {
@@ -430,291 +677,310 @@
 
     var t = lastTelem;
     if (!t) {
-      ctx.fillStyle = '#445';
+      ctx.fillStyle = '#475569';
       ctx.font = (16 * dpr) + 'px sans-serif';
       ctx.textAlign = 'center';
-      ctx.fillText('Waiting for connection...', w / 2, h / 2);
+      ctx.fillText('Connect to robot to view map...', w / 2, h / 2);
       return;
     }
 
-    // Compute bounds from trail, grid, nodes, and car position
-    var minX = t.x - 30, maxX = t.x + 30, minY = t.y - 30, maxY = t.y + 30;
+    // Bounds auto-fitting
+    var minX = t.x - 40, maxX = t.x + 40, minY = t.y - 40, maxY = t.y + 40;
     if (t.trail) {
       for (var i = 0; i < t.trail.length; i++) {
-        var p = t.trail[i];
-        if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
-        if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
+        var pt = t.trail[i];
+        if (pt.x < minX) minX = pt.x; if (pt.x > maxX) maxX = pt.x;
+        if (pt.y < minY) minY = pt.y; if (pt.y > maxY) maxY = pt.y;
       }
     }
     for (var key in gridMap) {
-      var parts = key.split(',');
-      var gx = parseFloat(parts[0]), gy = parseFloat(parts[1]);
-      if (gx < minX) minX = gx; if (gx > maxX) maxX = gx;
-      if (gy < minY) minY = gy; if (gy > maxY) maxY = gy;
+      if (gridMap[key] > 0.4) {
+        var p = key.split(',');
+        var gx = parseFloat(p[0]), gy = parseFloat(p[1]);
+        if (gx < minX) minX = gx; if (gx > maxX) maxX = gx;
+        if (gy < minY) minY = gy; if (gy > maxY) maxY = gy;
+      }
     }
-    // Padding
-    minX -= 20; maxX += 20; minY -= 20; maxY += 20;
 
-    // Scale to fit
+    minX -= 15; maxX += 15; minY -= 15; maxY += 15;
     var rangeX = maxX - minX || 1, rangeY = maxY - minY || 1;
-    var scale = Math.min(w / rangeX, h / rangeY) * 0.92;
+    var scale = Math.min(w / rangeX, h / rangeY) * 0.90;
     var cx = w / 2, cy = h / 2;
     var midX = (minX + maxX) / 2, midY = (minY + maxY) / 2;
 
-    // Transform: world to canvas.  x_world -> right, y_world -> up (so flip Y)
     function wx(x) { return cx + (x - midX) * scale; }
     function wy(y) { return cy - (y - midY) * scale; }
 
-    // 1. GRID CELLS
-    var cellSize = Math.max(1, 2 * scale);
-    for (var key in gridMap) {
-      var v = gridMap[key];
-      if (v === 0) continue;
-      var parts = key.split(',');
-      var gx = parseFloat(parts[0]), gy = parseFloat(parts[1]);
-      if (v > 0.3) {
-        // Wall
-        var a = Math.min(1, v / 3);
-        ctx.fillStyle = 'rgba(232,236,248,' + a.toFixed(2) + ')';
-      } else if (v < -0.2) {
-        // Free
-        var a = Math.min(0.6, -v / 4);
-        ctx.fillStyle = 'rgba(26,48,32,' + a.toFixed(2) + ')';
-      } else {
-        continue;
-      }
-      ctx.fillRect(wx(gx) - cellSize / 2, wy(gy) - cellSize / 2, cellSize, cellSize);
-    }
-
-    // 2. TRAIL
-    if (t.trail && t.trail.length > 1) {
-      ctx.strokeStyle = 'rgba(176,136,249,0.5)';
-      ctx.lineWidth = 1.5 * dpr;
+    // 1. SUBTLE BACKGROUND GRID
+    var gridSpacing = 30 * scale; // 30 cm maze grid
+    if (gridSpacing > 15 * dpr) {
+      ctx.strokeStyle = '#0f172a';
+      ctx.lineWidth = 1 * dpr;
       ctx.beginPath();
-      ctx.moveTo(wx(t.trail[0].x), wy(t.trail[0].y));
-      for (var i = 1; i < t.trail.length; i++) {
-        ctx.lineTo(wx(t.trail[i].x), wy(t.trail[i].y));
+      for (var x = cx % gridSpacing; x < w; x += gridSpacing) {
+        ctx.moveTo(x, 0); ctx.lineTo(x, h);
+      }
+      for (var y = cy % gridSpacing; y < h; y += gridSpacing) {
+        ctx.moveTo(0, y); ctx.lineTo(w, y);
       }
       ctx.stroke();
     }
 
-    // 3. GRAPH EDGES
-    if (t.edges && t.nodes) {
-      ctx.strokeStyle = 'rgba(90,169,255,0.5)';
-      ctx.lineWidth = 2 * dpr;
-      for (var i = 0; i < t.edges.length; i++) {
-        var e = t.edges[i];
-        var from = t.nodes.find(function(n) { return n.id === e.from; });
-        var to = t.nodes.find(function(n) { return n.id === e.to; });
-        if (from && to) {
-          ctx.beginPath();
-          ctx.moveTo(wx(from.x), wy(from.y));
-          ctx.lineTo(wx(to.x), wy(to.y));
-          ctx.stroke();
+    // 2. SOLID CRISP WALLS
+    var cellSize = Math.max(2 * dpr, 2.2 * scale);
+    ctx.fillStyle = '#cbd5e1';
+    for (var k in gridMap) {
+      var v = gridMap[k];
+      if (v > 0.3) {
+        var parts = k.split(',');
+        var px = parseFloat(parts[0]), py = parseFloat(parts[1]);
+        ctx.fillRect(wx(px) - cellSize / 2, wy(py) - cellSize / 2, cellSize, cellSize);
+      }
+    }
+
+    // 3. DRIVEN TRAIL (BOLD & CLEAN)
+    if (t.trail && t.trail.length > 1) {
+      ctx.strokeStyle = 'rgba(56, 189, 248, 0.7)';
+      ctx.lineWidth = 3.5 * dpr;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.beginPath();
+      ctx.moveTo(wx(t.trail[0].x), wy(t.trail[0].y));
+      for (var j = 1; j < t.trail.length; j++) {
+        ctx.lineTo(wx(t.trail[j].x), wy(t.trail[j].y));
+      }
+      ctx.stroke();
+    }
+
+    // 4. GRAPH NODES / TURNING POINTS
+    if (t.nodes) {
+      for (var nIdx = 0; nIdx < t.nodes.length; nIdx++) {
+        var nd = t.nodes[nIdx];
+        ctx.beginPath();
+        ctx.arc(wx(nd.x), wy(nd.y), 3.5 * dpr, 0, Math.PI * 2);
+        if (nd.isDeadEnd) {
+          ctx.fillStyle = '#ef4444';
+          ctx.fill();
+        } else {
+          ctx.fillStyle = '#38bdf8';
+          ctx.fill();
         }
       }
     }
 
-    // 4. GRAPH NODES
-    if (t.nodes) {
-      for (var i = 0; i < t.nodes.length; i++) {
-        var n = t.nodes[i];
-        ctx.beginPath();
-        ctx.arc(wx(n.x), wy(n.y), 3 * dpr, 0, Math.PI * 2);
-        if (n.isDeadEnd) ctx.fillStyle = '#ff5a5f';
-        else if (n.isJunction) ctx.fillStyle = '#ffb020';
-        else ctx.fillStyle = '#5aa9ff';
-        ctx.fill();
-      }
-    }
-
-    // 5. OPENINGS
+    // 5. SIDE OPENINGS (CLEAN BADGES)
     if (t.openings) {
-      for (var i = 0; i < t.openings.length; i++) {
-        var op = t.openings[i];
+      for (var opIdx = 0; opIdx < t.openings.length; opIdx++) {
+        var op = t.openings[opIdx];
         ctx.beginPath();
-        ctx.arc(wx(op.x), wy(op.y), 5 * dpr, 0, Math.PI * 2);
-        ctx.fillStyle = op.entered ? '#3ddc97' : '#ff8c42';
-        ctx.globalAlpha = 0.7;
+        ctx.arc(wx(op.x), wy(op.y), 6 * dpr, 0, Math.PI * 2);
+        ctx.fillStyle = op.entered ? 'rgba(34, 197, 94, 0.8)' : 'rgba(249, 115, 22, 0.85)';
         ctx.fill();
-        ctx.globalAlpha = 1;
-        // Label
-        ctx.fillStyle = op.entered ? '#3ddc97' : '#ff8c42';
-        ctx.font = (9 * dpr) + 'px Consolas, monospace';
-        ctx.textAlign = 'center';
-        ctx.fillText(op.side === 'left' ? 'L' : 'R', wx(op.x), wy(op.y) - 7 * dpr);
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 1 * dpr;
+        ctx.stroke();
       }
     }
 
-    // 6. SENSOR BEAMS
-    for (var i = 0; i < lastBeams.length; i++) {
-      var b = lastBeams[i];
-      ctx.strokeStyle = b.hit ? 'rgba(255,220,80,0.6)' : 'rgba(255,220,80,0.2)';
-      ctx.lineWidth = 1 * dpr;
-      ctx.setLineDash(b.hit ? [] : [4 * dpr, 3 * dpr]);
-      ctx.beginPath();
-      ctx.moveTo(wx(b.sx), wy(b.sy));
-      ctx.lineTo(wx(b.ex), wy(b.ey));
-      ctx.stroke();
-      ctx.setLineDash([]);
-      if (b.hit) {
-        ctx.beginPath();
-        ctx.arc(wx(b.ex), wy(b.ey), 2.5 * dpr, 0, Math.PI * 2);
-        ctx.fillStyle = '#ffdc50';
-        ctx.fill();
-      }
-    }
-
-    // 7. CAR RECTANGLE
+    // 6. ROBOT CAR
     if (lastCar.length === 4) {
+      // Body
       ctx.beginPath();
       ctx.moveTo(wx(lastCar[0].x), wy(lastCar[0].y));
-      for (var i = 1; i < 4; i++) ctx.lineTo(wx(lastCar[i].x), wy(lastCar[i].y));
+      for (var c = 1; c < 4; c++) ctx.lineTo(wx(lastCar[c].x), wy(lastCar[c].y));
       ctx.closePath();
-      ctx.fillStyle = 'rgba(90,169,255,0.25)';
-      ctx.strokeStyle = '#5aa9ff';
-      ctx.lineWidth = 1.5 * dpr;
+      ctx.fillStyle = 'rgba(30, 41, 59, 0.9)';
       ctx.fill();
+      ctx.strokeStyle = '#38bdf8';
+      ctx.lineWidth = 2 * dpr;
       ctx.stroke();
-      // Red front nose (line from FL to FR)
-      ctx.strokeStyle = '#ff5a5f';
-      ctx.lineWidth = 3 * dpr;
+
+      // Bold Red Nose (Front edge between corner 0 and corner 1)
+      ctx.strokeStyle = '#ef4444';
+      ctx.lineWidth = 4 * dpr;
       ctx.beginPath();
       ctx.moveTo(wx(lastCar[0].x), wy(lastCar[0].y));
       ctx.lineTo(wx(lastCar[1].x), wy(lastCar[1].y));
       ctx.stroke();
     }
 
-    // 8. HEADING ARROW from car centre
-    var arrowLen = 12 * scale;
-    if (arrowLen < 10 * dpr) arrowLen = 10 * dpr;
+    // 7. HEADING ARROW
     var headRad = t.heading * Math.PI / 180;
+    var arrowLen = Math.max(16 * dpr, 14 * scale);
     var ax = wx(t.x) + Math.sin(headRad) * arrowLen;
     var ay = wy(t.y) - Math.cos(headRad) * arrowLen;
-    ctx.strokeStyle = '#ff5a5f';
-    ctx.lineWidth = 2.5 * dpr;
+
+    ctx.strokeStyle = '#ef4444';
+    ctx.lineWidth = 3 * dpr;
     ctx.beginPath();
     ctx.moveTo(wx(t.x), wy(t.y));
     ctx.lineTo(ax, ay);
     ctx.stroke();
+
     // Arrowhead
-    var aSize = 5 * dpr;
+    var aSize = 6 * dpr;
     var aAngle = Math.atan2(ay - wy(t.y), ax - wx(t.x));
     ctx.beginPath();
     ctx.moveTo(ax, ay);
     ctx.lineTo(ax - aSize * Math.cos(aAngle - 0.5), ay - aSize * Math.sin(aAngle - 0.5));
     ctx.lineTo(ax - aSize * Math.cos(aAngle + 0.5), ay - aSize * Math.sin(aAngle + 0.5));
     ctx.closePath();
-    ctx.fillStyle = '#ff5a5f';
+    ctx.fillStyle = '#ef4444';
     ctx.fill();
 
-    // 9. FACING label on canvas
-    ctx.fillStyle = '#e8ecf8';
-    ctx.font = 'bold ' + (14 * dpr) + 'px sans-serif';
+    // 8. ON-SCREEN HUD
+    ctx.fillStyle = '#f8fafc';
+    ctx.font = 'bold ' + (15 * dpr) + 'px sans-serif';
     ctx.textAlign = 'left';
-    ctx.fillText('FACING ' + t.headingName + '  ' + t.heading + '°', 12 * dpr, 24 * dpr);
+    ctx.fillText('FACING ' + t.headingName + ' (' + t.heading + '°)', 16 * dpr, 28 * dpr);
 
-    // Position label
     ctx.font = (11 * dpr) + 'px Consolas, monospace';
-    ctx.fillStyle = '#7a84a8';
-    ctx.fillText('x=' + t.x + ' y=' + t.y + '  dist=' + t.totalDist + 'cm', 12 * dpr, 42 * dpr);
+    ctx.fillStyle = '#94a3b8';
+    ctx.fillText('Position: ' + t.x.toFixed(0) + ' cm, ' + t.y.toFixed(0) + ' cm', 16 * dpr, 48 * dpr);
   }
 
-  // ---- KEYBOARD -------------------------------------------------------------
-  var WASD = { KeyW: 'w', KeyS: 's', KeyA: 'a', KeyD: 'd', ArrowUp: 'w', ArrowDown: 's', ArrowLeft: 'a', ArrowRight: 'd' };
+  // ---- KEYBOARD CONTROLS ----
+  var WASD = { KeyW: 'w', KeyS: 's', KeyA: 'a', KeyD: 'd' };
 
-  var spaceHeld = false;
-  var estopLatched = false;
-
-  function updateEstopUI() {
-    estop = spaceHeld || estopLatched;
-    $('estop').classList.toggle('on', estop);
-    $('estop').textContent = estop ? 'E-STOP ACTIVE' : 'E-STOP [Space hold]';
-    sendIntent();
-  }
-
-  window.addEventListener('keydown', function (e) {
+  window.addEventListener('keydown', function(e) {
     if (e.code === 'Space') {
       e.preventDefault();
-      if (!spaceHeld) { spaceHeld = true; updateEstopUI(); }
+      spaceHeld = true;
+      estop = true;
+      $('btnEstop').classList.add('active');
+      sendIntent();
       return;
     }
+
     if (e.ctrlKey || e.metaKey || e.altKey) return;
 
+    // Movement WASD
     var dir = WASD[e.code];
     if (dir) {
       e.preventDefault();
       if (!keyHeld[dir]) { keyHeld[dir] = true; sendIntent(); }
       return;
     }
+
     if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') {
-      if (!boostKey) { boostKey = true; sendIntent(); }
-      return;
+      boostKey = true; sendIntent(); return;
     }
+
     if (e.repeat) return;
+
+    // Dedicated Turn Keys
     switch (e.code) {
-      case 'KeyQ': speed = Math.max(SPEED_MIN, speed - 10); sendIntent(); break;
-      case 'KeyE': speed = Math.min(SPEED_MAX, speed + 10); sendIntent(); break;
-      case 'KeyK':
-        if (wsReady()) ws.send(JSON.stringify({ type: 'spinCalib' }));
+      case 'KeyJ':
+      case 'ArrowLeft':
+        e.preventDefault();
+        sendTurn('left');
+        break;
+      case 'KeyL':
+      case 'ArrowRight':
+        e.preventDefault();
+        sendTurn('right');
+        break;
+      case 'KeyU':
+      case 'KeyB':
+      case 'ArrowDown':
+        e.preventDefault();
+        sendTurn('uturn');
+        break;
+      case 'Digit1':
+      case 'Numpad1':
+        sendTurn('north');
+        break;
+      case 'Digit2':
+      case 'Numpad2':
+        sendTurn('east');
+        break;
+      case 'Digit3':
+      case 'Numpad3':
+        sendTurn('south');
+        break;
+      case 'Digit4':
+      case 'Numpad4':
+        sendTurn('west');
+        break;
+      case 'KeyT':
+        e.preventDefault();
+        toggleTimer();
         break;
       case 'KeyR':
         if (wsReady()) ws.send(JSON.stringify({ type: 'reset' }));
         break;
-      case 'KeyT': e.preventDefault(); toggleTimer(); break;
+      case 'KeyK':
+        if (wsReady()) ws.send(JSON.stringify({ type: 'spinCalib' }));
+        break;
+      case 'KeyQ':
+        speed = Math.max(30, speed - 15);
+        sendIntent();
+        break;
+      case 'KeyE':
+        speed = Math.min(255, speed + 15);
+        sendIntent();
+        break;
     }
   });
 
-  window.addEventListener('keyup', function (e) {
+  window.addEventListener('keyup', function(e) {
     var dir = WASD[e.code];
     if (dir) { keyHeld[dir] = false; sendIntent(); return; }
     if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') { boostKey = false; sendIntent(); return; }
     if (e.code === 'Space') {
       e.preventDefault();
       spaceHeld = false;
-      updateEstopUI();
-      return;
+      estop = false;
+      $('btnEstop').classList.remove('active');
+      sendIntent();
     }
   });
 
-  window.addEventListener('blur', function () {
-    keyHeld = {}; boostKey = false; spaceHeld = false; updateEstopUI();
-  });
-  document.addEventListener('visibilitychange', function () {
-    if (document.hidden) { keyHeld = {}; boostKey = false; spaceHeld = false; updateEstopUI(); }
+  window.addEventListener('blur', function() {
+    keyHeld = {}; boostKey = false; spaceHeld = false; estop = false;
+    $('btnEstop').classList.remove('active');
+    sendIntent();
   });
 
-  // ---- BUTTON EVENTS --------------------------------------------------------
-  $('estop').addEventListener('click', function () {
-    estopLatched = !estopLatched;
-    updateEstopUI();
-  });
-  $('btnSpinCalib').addEventListener('click', function () {
-    if (wsReady()) ws.send(JSON.stringify({ type: 'spinCalib' }));
-  });
-  $('btnMapToggle').addEventListener('click', function () {
-    if (wsReady()) ws.send(JSON.stringify({ type: 'toggleMap' }));
-  });
-  $('btnReset').addEventListener('click', function () {
+  // ---- BUTTON CLICKS ----
+  $('btnTimer').addEventListener('click', toggleTimer);
+  $('btnTurnL').addEventListener('click', function() { sendTurn('left'); });
+  $('btnTurnR').addEventListener('click', function() { sendTurn('right'); });
+  $('btnTurnU').addEventListener('click', function() { sendTurn('uturn'); });
+  $('snapN').addEventListener('click', function() { sendTurn('north'); });
+  $('snapE').addEventListener('click', function() { sendTurn('east'); });
+  $('snapS').addEventListener('click', function() { sendTurn('south'); });
+  $('snapW').addEventListener('click', function() { sendTurn('west'); });
+  $('btnResetMap').addEventListener('click', function() {
     if (wsReady()) ws.send(JSON.stringify({ type: 'reset' }));
   });
+  $('btnSpinCalib').addEventListener('click', function() {
+    if (wsReady()) ws.send(JSON.stringify({ type: 'spinCalib' }));
+  });
 
-  // ---- MAIN LOOP ------------------------------------------------------------
-  function tick() {
-    sendIntent();   // heartbeat
-    renderSidebar();
-    renderClock();
-  }
+  // Estop button click toggles
+  $('btnEstop').addEventListener('mousedown', function() {
+    estop = true; $('btnEstop').classList.add('active'); sendIntent();
+  });
+  window.addEventListener('mouseup', function() {
+    if (!spaceHeld && estop) {
+      estop = false; $('btnEstop').classList.remove('active'); sendIntent();
+    }
+  });
 
-  function animFrame() {
+  // Main loop
+  setInterval(function() {
+    sendIntent();
+    updateClock();
+  }, 40);
+
+  function loop() {
     renderMap();
-    requestAnimationFrame(animFrame);
+    requestAnimationFrame(loop);
   }
+  requestAnimationFrame(loop);
 
-  // ---- INIT -----------------------------------------------------------------
-  setInterval(tick, HEARTBEAT_MS);
-  requestAnimationFrame(animFrame);
-  connectWS();
+  connect();
 })();
 </script>
 </body>
