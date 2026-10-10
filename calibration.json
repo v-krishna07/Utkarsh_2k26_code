@@ -1,7 +1,7 @@
 {
   "alpha": 1,
   "fasterSide": "left",
-  "spinLeft": 1,
-  "spinRight": 1,
-  "spinInvert": true
+  "spinLeft": 0.68,
+  "spinRight": 0.69,
+  "spinInvert": false
 }

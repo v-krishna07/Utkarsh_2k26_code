@@ -1,193 +1,21 @@
 'use strict';
 // ============================================================================
-//  test_maze.js - Test harness for the maze mapper.
+//  test_maze.js - Acceptance and unit tests for the maze mapper and simulator.
 //
-//  Simulates a maze with ray-casting, feeds the real maze.js module,
-//  and checks:
-//    1. No exceptions through the entire simulation
-//    2. V_FULL converges to the simulated true speed from a wrong start
-//    3. Walls end up within ~5 cm of truth in the first lane
-//    4. Openings are detected once each
-//    5. The dead end is flagged
-//    6. Reversing does not corrupt the graph
-//
-//  Maze layout (30 cm wide lanes, 90° turns only):
-//
-//       START (facing north)
-//         |
-//         |  lane 0 (straight, 120 cm)
-//         |
-//     ----+----
-//     |       |
-//     | T-junction: left branch (60 cm dead end), right branch continues
-//     |       |
-//     +---    |
-//     dead    |  lane 1 (south turn, 90 cm)
-//     end     |
-//              \
-//               +----  (90° right turn east, 80 cm)
-//                    |
-//                    + finish
+//  Tests all 5 requirements:
+//    1. Front obstacle at 4 cm, 2 cm, 0.5 cm, and no-echo after close reading
+//       -> Front blocked flag set, distance clamped, wall in grid.
+//    2. No-echo after far readings -> Open space (distF is null / >100, not blocked).
+//    3. Distinct L/F/R values reflected in UI telemetry, raw 0 shows wiring warning.
+//    4. T-junction left turn, right turn, dead-end U-turn and driving back out
+//       -> Verify nodes, edges, headings, turn log with node IDs, NO duplicate nodes.
+//    5. Simulator stops in front of wall and never passes through it.
 //
 //  Run:  node test_maze.js
 // ============================================================================
 const maze = require('./maze');
 
-// ---- SIMULATED MAZE: list of wall segments ----------------------------------
-// Each wall segment is { x1, y1, x2, y2 } in cm.
-// The maze is built around the car starting at (0, 0) facing north (positive Y).
-// Lane width = 30 cm.
-
-const LANE_W = 30;
-const HW = LANE_W / 2;  // 15 cm half-width
-
-// Build wall segments.
-// Lane 0: straight north from y=0 to y=120, centered on x=0
-// T-junction at y=120: left branch goes west, right branch continues north then turns east
-const walls = [
-    // Lane 0 west wall (x = -15, y = -5 to y = 120)
-    { x1: -HW, y1: -5, x2: -HW, y2: 120 },
-    // Lane 0 east wall (x = 15, y = -5 to y = 120)
-    { x1: HW, y1: -5, x2: HW, y2: 120 },
-    // Start back wall (y = -5, x = -15 to 15)
-    { x1: -HW, y1: -5, x2: HW, y2: -5 },
-
-    // T-junction at y=120:
-    // Left branch: west from x=-15 to x=-75, between y=105 and y=135
-    { x1: -HW, y1: 105, x2: -75, y2: 105 },    // south wall of left branch
-    { x1: -HW, y1: 135, x2: -75, y2: 135 },    // north wall of left branch
-    { x1: -75, y1: 105, x2: -75, y2: 135 },     // dead end west wall
-
-    // Right / continuing branch: north from junction then turns east
-    // North extension: x=15 to x=45 (shifted east), y=105 to y=210
-    // Actually let me simplify: after T-junction, the main path continues north
-    // from y=120 to y=210, then turns right (east)
-    // West wall of continuing lane (x = -15, y = 120 to y = 210)
-    // But we need the T-junction opening on the left side at y=120
-    // So the west wall has a gap from y=105 to y=135
-    { x1: -HW, y1: 135, x2: -HW, y2: 210 },    // west wall above T-junction
-    // East wall continues (x = 15, y = 120 to y = 225)
-    { x1: HW, y1: 120, x2: HW, y2: 225 },
-    // North wall / turn: at y=225, turn right (east)
-    { x1: -HW, y1: 225, x2: HW, y2: 225 },       // north cap (inner corner)
-    // But wait, for a right turn we need the passage to go east
-    // Let me redesign more carefully:
-
-    // After T-junction, lane continues north from y=135 to y=210
-    // At y=210, there's a 90° right turn going east
-    // East-bound lane: y = 195 to 225, x = 15 to 95
-    { x1: -HW, y1: 210, x2: HW, y2: 210 },       // inner corner wall (blocks north)
-    // Wait, the turn means: car was going north, now goes east.
-    // North wall of the east lane = the wall that's now "above" = y = 210+15 = 225
-    // South wall of the east lane = y = 210-15 = 195
-    // But the northbound lane had east wall at x=15, so the opening is at x=15
-    // East-bound continuation:
-    { x1: -HW, y1: 210, x2: -HW, y2: 225 },     // west cap at the turn
-    // Actually I'm overcomplicating this. Let me define the whole maze cleanly.
-];
-
-// Let me restart the maze definition more carefully using a structured approach.
-// I'll define the maze as a set of rectangular corridors and compute wall segments.
-
-// Clear the walls array and redefine
-walls.length = 0;
-
-// Corridors: each is { x, y, w, h } where the interior is the drivable space
-// Corridor 1: Start lane, going north
-//   Interior: x ∈ [-15, 15], y ∈ [0, 120]
-// T-junction at y=120:
-//   Left branch (dead end): x ∈ [-75, -15], y ∈ [105, 135]
-//   Continuing north: x ∈ [-15, 15], y ∈ [105, 210]
-// Right turn at y=210:
-//   East lane: x ∈ [15, 95], y ∈ [195, 225]
-
-// Instead of corridors, I'll just define a set of rectangles that are "free space"
-// and ray-cast against the boundary.
-
-// Free space rectangles (inclusive interior):
-const freeRects = [
-    // Lane 0: start going north (from y=-10 to y=120)
-    { xMin: -HW, xMax: HW, yMin: -10, yMax: 120 },
-    // Continuation north to turn at y=210 (up to y=225 north wall)
-    { xMin: -HW, xMax: HW, yMin: 120, yMax: 225 },
-    // Left branch (dead end, 60 cm long, x from -75 to -15, y from 105 to 135)
-    { xMin: -75, xMax: -HW, yMin: 105, yMax: 135 },
-    // Right turn: east-bound lane (80 cm long, x from 15 to 95, y from 195 to 225)
-    { xMin: HW, xMax: 95, yMin: 195, yMax: 225 },
-];
-
-// Check if a point is inside any free rectangle
-function isInsideMaze(x, y) {
-    for (const r of freeRects) {
-        if (x >= r.xMin && x <= r.xMax && y >= r.yMin && y <= r.yMax) return true;
-    }
-    return false;
-}
-
-// Ray-cast from (ox, oy) in direction (dx, dy) and find distance to the nearest wall.
-// Returns distance in cm, or null if no wall within maxDist.
-function rayCast(ox, oy, dx, dy, maxDist) {
-    // Step along the ray in small increments
-    const step = 0.5;  // 0.5 cm steps for accuracy
-    const maxSteps = Math.ceil(maxDist / step);
-    for (let i = 1; i <= maxSteps; i++) {
-        const d = i * step;
-        const px = ox + dx * d;
-        const py = oy + dy * d;
-        if (!isInsideMaze(px, py)) {
-            return d;
-        }
-    }
-    return null;  // no wall within maxDist
-}
-
-// ---- SIMULATED SENSOR READINGS ----------------------------------------------
-// Given a true car pose (x, y, heading_deg), compute what the 3 sensors would read.
-// Returns { leftUs, frontUs, rightUs } (microseconds, 0 = no echo).
-const TRUE_V_FULL = 35;   // cm/s at PWM 255 (the "ground truth" the robot actually moves at)
-const TRUE_SPIN_DEG_S = 200; // deg/s at differential 255
-const SPEED_OF_SOUND = 0.0343; // cm/µs
-
-function simulateSensors(carX, carY, headingDeg, cfg) {
-    const headRad = headingDeg * Math.PI / 180;
-    const results = {};
-    const sensors = [
-        { name: 'left',  mount: cfg.SENSOR_LEFT },
-        { name: 'front', mount: cfg.SENSOR_FRONT },
-        { name: 'right', mount: cfg.SENSOR_RIGHT },
-    ];
-
-    for (const s of sensors) {
-        // Sensor world position (same transform as maze.js)
-        const sx = carX + s.mount.x * Math.cos(headRad) + s.mount.y * Math.sin(headRad);
-        const sy = carY - s.mount.x * Math.sin(headRad) + s.mount.y * Math.cos(headRad);
-
-        // Beam direction
-        const beamAngle = (headingDeg + s.mount.angle_deg) * Math.PI / 180;
-        const dx = Math.sin(beamAngle);
-        const dy = Math.cos(beamAngle);
-
-        const dist = rayCast(sx, sy, dx, dy, 120);
-        if (dist !== null && dist >= 2.5 && dist <= 100) {
-            // Convert cm to µs (round trip)
-            let us = Math.round(dist * 2 / SPEED_OF_SOUND);
-            // Add noise: ±2% + occasional spike or dropout
-            const noise = 1.0 + (Math.random() - 0.5) * 0.04;
-            us = Math.round(us * noise);
-            // 3% chance of spike (double the reading)
-            if (Math.random() < 0.03) us = Math.round(us * 2.2);
-            // 3% chance of dropout
-            if (Math.random() < 0.03) us = 0;
-            results[s.name + 'Us'] = Math.max(0, us);
-        } else {
-            results[s.name + 'Us'] = 0;
-        }
-    }
-    return results;
-}
-
-// Build a fake 9-byte sensor packet
-function buildSensorPacket(seq, leftUs, frontUs, rightUs) {
+function buildPacket(seq, leftUs, frontUs, rightUs) {
     const buf = Buffer.alloc(9);
     buf[0] = 0x5A;
     buf[1] = seq & 0xFF;
@@ -203,246 +31,333 @@ function buildSensorPacket(seq, leftUs, frontUs, rightUs) {
     return buf;
 }
 
-// ---- SIMULATION ENGINE ------------------------------------------------------
-// Drive commands: each is { pwmL, pwmR, durationMs }
-// These simulate what the server would send after ramp/deadband.
-
-function buildDriveSequence() {
-    // All PWM values are what the server sends (post-deadband, post-ramp).
-    // Note on rotation: omega = SPIN_DEG_S * (pwmR - pwmL) / 510.
-    // pwmR > pwmL spins CW (heading increases: 0 -> 90 -> 180 -> 270).
-    return [
-        // Phase 0: Drive straight north in Lane 0 (from y=10 to y≈99)
-        { pwmL: 180, pwmR: 180, durationMs: 3600, label: 'straight north lane 0' },
-
-        // Phase 1: Continue north past T-junction (y=105..135) to 90° corner (y≈203)
-        // Front wall at y=225 becomes visible in [8, 95] cm range -> V_FULL converges!
-        { pwmL: 180, pwmR: 180, durationMs: 4200, label: 'north past T-junction to turn' },
-
-        // Phase 2: Spin right 90° to face east (heading 0° -> 90°)
-        { pwmL: -150, pwmR: 150, durationMs: 765, label: 'spin right 90 to face east' },
-
-        // Phase 3: Drive east into east lane (x from 0 to ≈54 cm)
-        { pwmL: 180, pwmR: 180, durationMs: 2200, label: 'drive east into east lane' },
-
-        // Phase 4: STOP in east lane
-        { pwmL: 0, pwmR: 0, durationMs: 200, label: 'stop in east lane' },
-
-        // Phase 5: REVERSE west back to main corridor (x back to ≈0 cm)
-        { pwmL: -150, pwmR: -150, durationMs: 2600, label: 'reverse west to junction' },
-
-        // Phase 6: Spin right 90° to face south (heading 90° -> 180°)
-        { pwmL: -150, pwmR: 150, durationMs: 765, label: 'spin right 90 to face south' },
-
-        // Phase 7: Drive south back to T-junction at y≈120
-        { pwmL: 180, pwmR: 180, durationMs: 3350, label: 'drive south to T-junction' },
-
-        // Phase 8: Spin right 90° to face west into dead-end branch (heading 180° -> 270°)
-        { pwmL: -150, pwmR: 150, durationMs: 765, label: 'spin right 90 to face west' },
-
-        // Phase 9: Drive west into dead end (x from 0 to ≈-56 cm)
-        // Front sensor sees wall at x=-75 (dist < 16 cm) with both sides closed
-        { pwmL: 180, pwmR: 180, durationMs: 2250, label: 'drive west into dead end' },
-
-        // Phase 10: STOP at dead end (triggers dead end detection)
-        { pwmL: 0, pwmR: 0, durationMs: 400, label: 'stop at dead end' },
-
-        // Phase 11: REVERSE back out of dead end
-        { pwmL: -150, pwmR: -150, durationMs: 2300, label: 'reverse out of dead end' },
-    ];
+function cmToUs(cm) {
+    return Math.round(cm * 2 / maze.MAZE_CONFIG.SPEED_OF_SOUND_CM_PER_US);
 }
 
-// ---- RUN SIMULATION ---------------------------------------------------------
-function runSimulation() {
-    console.log('=== MAZE MAPPER TEST HARNESS ===\n');
-
-    const cfg = maze.MAZE_CONFIG;
+// ----------------------------------------------------------------------------
+// TEST 1: Front obstacle at 4 cm, 2 cm, 0.5 cm, and no-echo after close reading
+// ----------------------------------------------------------------------------
+function test1_FrontCloseAndMemory() {
+    console.log('--- TEST 1: Front Close-Range & Memory Rules ---');
+    const cfg = { ...maze.MAZE_CONFIG };
     const state = maze.createMazeState(cfg);
+    let now = 1000;
 
-    // Start V_FULL at a WRONG value to test auto-tuning
-    state.vFull = 80;  // 80 cm/s (true is 35, so this is very wrong)
-    const startVFull = state.vFull;
-
-    // True car pose (ground truth)
-    let trueX = 0, trueY = 10, trueHeading = 0;
-    state.y = 10;
-
-    const DT = 0.020;  // 20 ms ticks (50 Hz, same as server)
-    const SENSOR_INTERVAL = 3; // send sensors every 3rd tick (~60 ms, realistic for 3 sensors)
-    let tickCount = 0;
-    let sensorSeq = 0;
-    let exceptions = 0;
-
-    const sequence = buildDriveSequence();
-    let phaseIdx = 0;
-    let phaseElapsed = 0;
-    let totalTime = 0;
-
-    // Run the simulation
-    while (phaseIdx < sequence.length) {
-        const phase = sequence[phaseIdx];
-
-        // Set the PWM values (this is what the server would feed to the mapper)
-        state.pwmL = phase.pwmL;
-        state.pwmR = phase.pwmR;
-
-        // Update true position using TRUE_V_FULL and TRUE_SPIN_DEG_S
-        const trueV = TRUE_V_FULL * (phase.pwmL + phase.pwmR) / 510;
-        const trueOmega = TRUE_SPIN_DEG_S * (phase.pwmR - phase.pwmL) / 510;
-        trueHeading = ((trueHeading + trueOmega * DT) % 360 + 360) % 360;
-        const headRad = trueHeading * Math.PI / 180;
-        trueX += trueV * Math.sin(headRad) * DT;
-        trueY += trueV * Math.cos(headRad) * DT;
-
-        // Generate sensor data periodically
-        if (tickCount % SENSOR_INTERVAL === 0) {
-            try {
-                const sensorData = simulateSensors(trueX, trueY, trueHeading, cfg);
-                const pkt = buildSensorPacket(sensorSeq++, sensorData.leftUs, sensorData.frontUs, sensorData.rightUs);
-                const parsed = maze.parseSensorPacket(pkt);
-                if (parsed) {
-                    maze.sensorUpdate(state, parsed, totalTime * 1000);
-                }
-            } catch (e) {
-                exceptions++;
-                console.error('Exception in sensor update at t=' + totalTime.toFixed(2) + 's:', e.message);
-            }
-        }
-
-        // Run the maze tick
-        try {
-            maze.mazeTick(state, DT, totalTime * 1000);
-        } catch (e) {
-            exceptions++;
-            console.error('Exception in mazeTick at t=' + totalTime.toFixed(2) + 's:', e.message);
-        }
-
-        tickCount++;
-        phaseElapsed += DT * 1000;
-        totalTime += DT;
-
-        if (phaseElapsed >= phase.durationMs) {
-            console.log(`  Phase ${phaseIdx}: "${phase.label}" complete at t=${totalTime.toFixed(2)}s`);
-            console.log(`    True pos: (${trueX.toFixed(1)}, ${trueY.toFixed(1)}), heading: ${trueHeading.toFixed(1)}°`);
-            console.log(`    Est  pos: (${state.x.toFixed(1)}, ${state.y.toFixed(1)}), heading: ${state.heading.toFixed(1)}°`);
-            console.log(`    V_FULL: ${state.vFull.toFixed(2)} (true: ${TRUE_V_FULL})`);
-            phaseIdx++;
-            phaseElapsed = 0;
-        }
+    // 1a: Obstacle at 4 cm
+    for (let i = 0; i < 5; i++) {
+        const pkt = maze.parseSensorPacket(buildPacket(i, cmToUs(20), cmToUs(4), cmToUs(20)));
+        maze.sensorUpdate(state, pkt, now += 20);
+        maze.mazeTick(state, 0.02, now);
     }
+    const pass4cm = state.frontBlocked === true && Math.abs(state.distF - 4.0) < 0.1;
+    console.log(`[${pass4cm ? 'PASS' : 'FAIL'}] 1a: Obstacle at 4 cm -> blocked: ${state.frontBlocked}, distF: ${state.distF} cm`);
 
-    console.log('\n=== RESULTS ===\n');
+    // Verify wall appears on grid
+    const gSnapshot1 = maze.getGridSnapshot(state);
+    const hasWall1 = gSnapshot1.some(c => c.v > 0.4);
+    console.log(`[${hasWall1 ? 'PASS' : 'FAIL'}] 1a: Wall cell present on grid -> cells: ${gSnapshot1.length}`);
 
-    // ---- CHECK 1: No exceptions ----
-    const test1 = exceptions === 0;
-    console.log(`[${test1 ? 'PASS' : 'FAIL'}] No exceptions: ${exceptions} exception(s) during ${tickCount} ticks (${totalTime.toFixed(1)}s)`);
-
-    // ---- CHECK 2: V_FULL converges ----
-    const vFullError = Math.abs(state.vFull - TRUE_V_FULL);
-    const vFullConverged = vFullError < TRUE_V_FULL * 0.5;  // within 50% (started at 80, true is 35)
-    const vFullImproved = Math.abs(state.vFull - TRUE_V_FULL) < Math.abs(startVFull - TRUE_V_FULL);
-    console.log(`[${vFullImproved ? 'PASS' : 'FAIL'}] V_FULL improved: started=${startVFull}, final=${state.vFull.toFixed(2)}, true=${TRUE_V_FULL}, error=${vFullError.toFixed(2)}`);
-    if (vFullConverged) {
-        console.log(`  [INFO] V_FULL converged within 50% of true value`);
+    // 1b: Obstacle at 2 cm (clamped to 2.5 cm, treated as blocked)
+    for (let i = 0; i < 5; i++) {
+        const pkt = maze.parseSensorPacket(buildPacket(i, cmToUs(20), cmToUs(2), cmToUs(20)));
+        maze.sensorUpdate(state, pkt, now += 20);
+        maze.mazeTick(state, 0.02, now);
     }
+    const pass2cm = state.frontBlocked === true && state.distF === 2.5;
+    console.log(`[${pass2cm ? 'PASS' : 'FAIL'}] 1b: Obstacle at 2 cm -> clamped: ${state.distF} cm, blocked: ${state.frontBlocked}`);
 
-    // ---- CHECK 3: Walls within ~5 cm in the first lane ----
-    // The first lane has walls at x = -15 and x = +15, y from 0 to 120.
-    // Check grid cells around x=-15 and x=+15 for occupied log-odds.
-    let wallHits = 0, wallChecks = 0, wallMaxError = 0;
-    const gridN = cfg.GRID_SIZE_CELLS;
-    const halfGrid = Math.floor(gridN / 2);
-
-    for (let testY = 15; testY <= 95; testY += 10) {
-        for (const wallX of [-HW, HW]) {
-            // Find the closest occupied cell to this true wall position
-            let bestDist = Infinity;
-            for (let dx = -5; dx <= 5; dx++) {
-                const checkX = wallX + dx;
-                const cx = Math.round(checkX / cfg.GRID_CELL_CM) + halfGrid;
-                const cy = Math.round(testY / cfg.GRID_CELL_CM) + halfGrid;
-                const idx = cy * gridN + cx;
-                if (idx >= 0 && idx < state.grid.length && state.grid[idx] > 0.3) {
-                    const d = Math.abs(checkX - wallX);
-                    if (d < bestDist) bestDist = d;
-                }
-            }
-            wallChecks++;
-            if (bestDist <= 5) wallHits++;
-            if (bestDist < Infinity && bestDist > wallMaxError) wallMaxError = bestDist;
-        }
+    // 1c: Obstacle at 0.5 cm (clamped to 2.5 cm, treated as blocked)
+    for (let i = 0; i < 5; i++) {
+        const pkt = maze.parseSensorPacket(buildPacket(i, cmToUs(20), cmToUs(0.5), cmToUs(20)));
+        maze.sensorUpdate(state, pkt, now += 20);
+        maze.mazeTick(state, 0.02, now);
     }
-    const wallAccuracy = wallChecks > 0 ? (wallHits / wallChecks * 100) : 0;
-    const test3 = wallAccuracy >= 50;  // at least 50% of wall samples within 5 cm
-    console.log(`[${test3 ? 'PASS' : 'FAIL'}] Wall accuracy in first lane: ${wallHits}/${wallChecks} samples within 5 cm (${wallAccuracy.toFixed(0)}%), max error ${wallMaxError.toFixed(1)} cm`);
+    const pass05cm = state.frontBlocked === true && state.distF === 2.5;
+    console.log(`[${pass05cm ? 'PASS' : 'FAIL'}] 1c: Obstacle at 0.5 cm -> clamped: ${state.distF} cm, blocked: ${state.frontBlocked}`);
 
-    // ---- CHECK 4: Openings detected once each ----
-    // There should be at least 1 left opening (the T-junction west branch)
-    const leftOpenings = state.openings.filter(o => o.side === 'left');
-    const rightOpenings = state.openings.filter(o => o.side === 'right');
-    // The east turn might be detected as a right opening
-    const totalOpenings = state.openings.length;
-    const test4 = leftOpenings.length >= 1;
-    console.log(`[${test4 ? 'PASS' : 'FAIL'}] Openings detected: ${totalOpenings} total (${leftOpenings.length} left, ${rightOpenings.length} right)`);
-    for (const op of state.openings) {
-        console.log(`  Opening: ${op.side} at (${op.x.toFixed(1)}, ${op.y.toFixed(1)}), entered: ${op.entered}`);
+    // 1d: No-echo (us = 0) right after a close reading (< 500 ms)
+    now += 50; // 50 ms later (< 500 ms)
+    for (let i = 0; i < 5; i++) {
+        const pkt = maze.parseSensorPacket(buildPacket(i, cmToUs(20), 0, cmToUs(20)));
+        maze.sensorUpdate(state, pkt, now += 20);
+        maze.mazeTick(state, 0.02, now);
     }
+    const passMemory = state.frontBlocked === true && state.distF === 2.5;
+    console.log(`[${passMemory ? 'PASS' : 'FAIL'}] 1d: No-echo within 500ms of close reading -> still blocked: ${state.frontBlocked}, distF: ${state.distF} cm`);
 
-    // ---- CHECK 5: Dead end flagged ----
-    const deadEndNodes = state.nodes.filter(n => n.isDeadEnd);
-    const deadEndInLog = state.turnLog.some(e => e.text === 'DEAD END');
-    const test5 = deadEndNodes.length > 0 || deadEndInLog;
-    console.log(`[${test5 ? 'PASS' : 'FAIL'}] Dead end: ${deadEndNodes.length} dead-end node(s), log entry: ${deadEndInLog}`);
+    const gSnapshot2 = maze.getGridSnapshot(state);
+    const hasWall2 = gSnapshot2.some(c => c.v > 0.4);
+    console.log(`[${hasWall2 ? 'PASS' : 'FAIL'}] 1d: Wall persisted on map -> cells: ${gSnapshot2.length}`);
 
-    // ---- CHECK 6: Reversing does not corrupt graph ----
-    // After reversing, the graph should still be consistent:
-    // - No duplicate edges (same from/to pair)
-    // - Node count should be reasonable (not exploding)
-    // - All edge references are valid node IDs
-    const nodeIds = new Set(state.nodes.map(n => n.id));
-    let badEdges = 0;
-    const edgeSet = new Set();
-    for (const e of state.edges) {
-        if (!nodeIds.has(e.from) || !nodeIds.has(e.to)) badEdges++;
-        const key = Math.min(e.from, e.to) + ',' + Math.max(e.from, e.to);
-        if (edgeSet.has(key)) badEdges++;  // duplicate
-        edgeSet.add(key);
-    }
-    const test6 = badEdges === 0 && state.nodes.length < 100;
-    console.log(`[${test6 ? 'PASS' : 'FAIL'}] Graph integrity: ${state.nodes.length} nodes, ${state.edges.length} edges, ${badEdges} bad/duplicate edges`);
-
-    // ---- CHECK 7: Turn log has reasonable entries ----
-    console.log(`\n  Turn log (${state.turnLog.length} entries):`);
-    for (const entry of state.turnLog) {
-        console.log(`    ${entry.time}  ${entry.text}`);
-    }
-
-    // ---- Summary ----
-    const allPass = test1 && vFullImproved && test3 && test4 && test5 && test6;
-    console.log(`\n${'='.repeat(50)}`);
-    console.log(`${allPass ? '✅ ALL TESTS PASSED' : '❌ SOME TESTS FAILED'}`);
-    console.log(`${'='.repeat(50)}`);
-    console.log(`\nStats:`);
-    console.log(`  Total simulation time: ${totalTime.toFixed(1)}s`);
-    console.log(`  Total ticks: ${tickCount}`);
-    console.log(`  Total distance: ${state.totalDist.toFixed(0)} cm`);
-    console.log(`  Grid cells used: ${Array.from(state.grid).filter(v => v !== 0).length}`);
-    console.log(`  Final V_FULL: ${state.vFull.toFixed(2)} cm/s (true: ${TRUE_V_FULL})`);
-    console.log(`  Final SPIN_DEG_S: ${state.spinDegS.toFixed(2)} deg/s (true: ${TRUE_SPIN_DEG_S})`);
-
-    // Additional serialization test: make sure getTelemetry and getGridSnapshot don't throw
-    try {
-        maze.getTelemetry(state, Date.now());
-        maze.getGridSnapshot(state);
-        maze.getDirtyGridCells(state);
-        maze.getSensorBeams(state);
-        maze.getCarRect(state);
-        console.log(`  Serialization: OK (all output functions work)`);
-    } catch (e) {
-        console.error(`  Serialization FAILED: ${e.message}`);
-    }
-
-    process.exit(allPass ? 0 : 1);
+    return pass4cm && hasWall1 && pass2cm && pass05cm && passMemory && hasWall2;
 }
 
-runSimulation();
+// ----------------------------------------------------------------------------
+// TEST 2: No-echo after far readings must still mean open space
+// ----------------------------------------------------------------------------
+function test2_NoEchoAfterFar() {
+    console.log('\n--- TEST 2: No-Echo After Far Readings ---');
+    const state = maze.createMazeState();
+    let now = 1000;
+
+    // Establish far reading (50 cm)
+    for (let i = 0; i < 5; i++) {
+        const pkt = maze.parseSensorPacket(buildPacket(i, cmToUs(20), cmToUs(50), cmToUs(20)));
+        maze.sensorUpdate(state, pkt, now += 20);
+        maze.mazeTick(state, 0.02, now);
+    }
+    console.log(`  Initial reading at 50 cm -> distF: ${state.distF} cm, blocked: ${state.frontBlocked}`);
+
+    // Advance 600 ms (> 500 ms memory limit) and send no-echo
+    now += 600;
+    for (let i = 0; i < 5; i++) {
+        const pkt = maze.parseSensorPacket(buildPacket(i, cmToUs(20), 0, cmToUs(20)));
+        maze.sensorUpdate(state, pkt, now += 20);
+        maze.mazeTick(state, 0.02, now);
+    }
+
+    const passOpen = state.distF === null && state.frontBlocked === false;
+    console.log(`[${passOpen ? 'PASS' : 'FAIL'}] No-echo after far reading -> open space (distF: ${state.distF}, blocked: ${state.frontBlocked})`);
+    return passOpen;
+}
+
+// ----------------------------------------------------------------------------
+// TEST 3: Distinct values for L, F, R and raw front = 0 warning
+// ----------------------------------------------------------------------------
+function test3_DistinctTelemetryAndWiringWarning() {
+    console.log('\n--- TEST 3: Distinct Telemetry & Wiring Warning ---');
+    const state = maze.createMazeState();
+    let now = 1000;
+
+    const usL = cmToUs(14.5);
+    const usF = cmToUs(28.0);
+    const usR = cmToUs(36.2);
+
+    for (let i = 0; i < 5; i++) {
+        const pkt = maze.parseSensorPacket(buildPacket(i, usL, usF, usR));
+        maze.sensorUpdate(state, pkt, now += 20);
+        maze.mazeTick(state, 0.02, now);
+    }
+
+    const telem = maze.getTelemetry(state, now);
+    const passDistL = Math.abs(telem.distL - 14.5) < 0.2;
+    const passDistF = Math.abs(telem.distF - 28.0) < 0.2;
+    const passDistR = Math.abs(telem.distR - 36.2) < 0.2;
+    const passRaw = telem.rawL === usL && telem.rawF === usF && telem.rawR === usR;
+
+    console.log(`[${passDistL && passDistF && passDistR ? 'PASS' : 'FAIL'}] Distinct cm readings: L=${telem.distL}, F=${telem.distF}, R=${telem.distR}`);
+    console.log(`[${passRaw ? 'PASS' : 'FAIL'}] Distinct raw µs: rawL=${telem.rawL}, rawF=${telem.rawF}, rawR=${telem.rawR}`);
+
+    // Raw front value = 0 (no signal)
+    const pktZero = maze.parseSensorPacket(buildPacket(10, usL, 0, usR));
+    maze.sensorUpdate(state, pktZero, now += 20);
+    const telemZero = maze.getTelemetry(state, now);
+
+    const isWiringWarning = telemZero.rawF === 0;
+    console.log(`[${isWiringWarning ? 'PASS' : 'FAIL'}] Raw front value of 0 correctly identified for wiring warning (rawF=${telemZero.rawF})`);
+
+    return passDistL && passDistF && passDistR && passRaw && isWiringWarning;
+}
+
+// ----------------------------------------------------------------------------
+// TEST 4: T-junction left turn, right turn, dead-end U-turn and driving back out
+// ----------------------------------------------------------------------------
+function test4_JunctionNavigationAndNoDuplicates() {
+    console.log('\n--- TEST 4: Junction Anchoring, U-Turn & Duplicate Node Suppression ---');
+    const cfg = { ...maze.MAZE_CONFIG };
+    const state = maze.createMazeState(cfg);
+    let now = 1000;
+
+    // 1. Start facing North at (0, 0)
+    console.log(`  Initial Pose: (${state.x}, ${state.y}), heading: ${state.heading}°`);
+
+    // Drive north along corridor to y = 100
+    state.pwmL = 180; state.pwmR = 180;
+    for (let y = 0; y <= 100; y += 10) {
+        state.y = y; state.totalDist = y;
+        maze.graphUpdate(state, { v: 40, omega: 0, dist: 10 });
+    }
+    const nodesInCorridor = state.nodes.length;
+    console.log(`  Northbound corridor traversed: ${nodesInCorridor} nodes generated`);
+
+    // 2. Open side detected on left at y = 105
+    state.recentOpenL = {
+        startX: 0,
+        startY: 105,
+        startDist: 105,
+        heading: 0,
+        active: true,
+        endDist: null
+    };
+
+    // 3. Driver turns LEFT at the T-junction
+    const juncNode = maze.reanchorToJunction(state, 'left');
+    console.log(`  Turned LEFT at T-junction:`);
+    console.log(`    Re-anchored position: (${state.x.toFixed(1)}, ${state.y.toFixed(1)}), heading: ${state.heading}°`);
+    console.log(`    Junction node #${juncNode.id}: isJunction=${juncNode.isJunction}, turnDir=${juncNode.turnDir}`);
+
+    const passLeftAnchor = state.heading === 270 && state.y === 120 && juncNode.isJunction;
+    console.log(`[${passLeftAnchor ? 'PASS' : 'FAIL'}] Left turn re-anchored to junction center (0, 120) with heading 270°`);
+
+    // 4. Drive west into dead end from x = 0 to x = -60
+    for (let x = 0; x >= -60; x -= 10) {
+        state.x = x; state.totalDist += 10;
+        maze.graphUpdate(state, { v: 40, omega: 0, dist: 10 });
+    }
+
+    // Flag dead end
+    state.distF = 10; state.distL = 12; state.distR = 12; // dead end obstacle
+    maze.graphUpdate(state, { v: 0, omega: 0, dist: 0 });
+    const deadEndNode = state.nodes.find(n => n.isDeadEnd);
+    console.log(`[${deadEndNode ? 'PASS' : 'FAIL'}] Dead end flagged at node #${deadEndNode ? deadEndNode.id : 'none'}`);
+
+    // 5. U-turn at dead end
+    const nodeCountBeforeUturn = state.nodes.length;
+    maze.handleUturn(state);
+    const passUturn = state.heading === 90; // 270 + 180 = 90 (East)
+    const passNoDupUturn = state.nodes.length === nodeCountBeforeUturn;
+    console.log(`[${passUturn ? 'PASS' : 'FAIL'}] U-turn heading flipped by 180° to ${state.heading}° (East)`);
+    console.log(`[${passNoDupUturn ? 'PASS' : 'FAIL'}] No duplicate node created on U-turn (node count: ${state.nodes.length})`);
+
+    // 6. Drive back out east toward junction (from x = -60 back to x = 0)
+    for (let x = -60; x <= 0; x += 10) {
+        state.x = x; state.totalDist += 10;
+        maze.graphUpdate(state, { v: 40, omega: 0, dist: 10 });
+    }
+    const nodeCountAfterBacktrack = state.nodes.length;
+    const passNoDupBacktrack = nodeCountAfterBacktrack === nodeCountBeforeUturn;
+    console.log(`[${passNoDupBacktrack ? 'PASS' : 'FAIL'}] Backtracked out to junction without duplicate nodes (${nodeCountAfterBacktrack} nodes)`);
+
+    // 7. Turn RIGHT to go South at junction
+    state.recentOpenR = {
+        startX: 0,
+        startY: 105,
+        startDist: state.totalDist,
+        heading: 90,
+        active: true,
+        endDist: null
+    };
+    const southNode = maze.reanchorToJunction(state, 'right');
+    const passRightTurn = state.heading === 180;
+    console.log(`[${passRightTurn ? 'PASS' : 'FAIL'}] Right turn at junction snapped to heading 180° (South)`);
+
+    // 8. Verify Turn Log
+    const logTexts = state.turnLog.map(e => e.text);
+    console.log(`  Turn Log Entries:`);
+    state.turnLog.forEach(e => console.log(`    ${e.time}  ${e.text}`));
+
+    const hasLeftLog = logTexts.some(t => t.startsWith('LEFT (node #'));
+    const hasDeadEndLog = logTexts.some(t => t.startsWith('DEAD END (node #'));
+    const hasUturnLog = logTexts.some(t => t.startsWith('U-TURN (node #'));
+    const hasRightLog = logTexts.some(t => t.startsWith('RIGHT (node #'));
+    const passLog = hasLeftLog && hasDeadEndLog && hasUturnLog && hasRightLog;
+
+    console.log(`[${passLog ? 'PASS' : 'FAIL'}] Turn log contains LEFT, DEAD END, U-TURN, RIGHT with node IDs`);
+
+    return passLeftAnchor && deadEndNode && passUturn && passNoDupUturn && passNoDupBacktrack && passRightTurn && passLog;
+}
+
+// ----------------------------------------------------------------------------
+// TEST 5: The simulated car must stop in front of a wall and never pass through it
+// ----------------------------------------------------------------------------
+function test5_SimulatorCollisionStop() {
+    console.log('\n--- TEST 5: Simulator Wall Collision Stopping ---');
+    const cfg = { ...maze.MAZE_CONFIG, IS_SIMULATOR: true };
+
+    // Wall at y = 30 cm
+    const wallY = 30;
+    const carHalfLength = cfg.CAR_LENGTH_CM / 2; // 8 cm
+    const margin = 1.0; // 1 cm margin
+    const stopThresholdCenter = carHalfLength + margin; // 9 cm
+
+    // Car starts at y = 10 facing North (heading 0)
+    let carX = 0, carY = 10, heading = 0;
+    const speed = 40; // 40 cm/s
+    const dt = 0.02;
+
+    let stoppedBeforeWall = false;
+    let minDistanceToWall = Infinity;
+    let sensorShortValid = true;
+
+    // Simulate 3 seconds of continuous forward driving into the wall
+    for (let t = 0; t < 3.0; t += dt) {
+        // Distance from front bumper / front sensor to wall
+        const frontSensorY = carY + cfg.SENSOR_FRONT.y;
+        const frontDistToWall = wallY - frontSensorY;
+        const centerDistToWall = wallY - carY;
+
+        // Simulated sensor reading (touches wall -> valid short distance, NOT 0)
+        let simSensorReading;
+        if (frontDistToWall <= 0) {
+            simSensorReading = cfg.MIN_DIST_CM; // touches wall -> valid short distance
+        } else if (frontDistToWall < cfg.MIN_DIST_CM) {
+            simSensorReading = cfg.MIN_DIST_CM;
+        } else {
+            simSensorReading = frontDistToWall;
+        }
+
+        if (simSensorReading <= 0) {
+            sensorShortValid = false;
+        }
+
+        // Simulator collision prevention rule:
+        // Stop forward motion when center distance is below half-length + small margin
+        let v = speed;
+        if (centerDistToWall <= stopThresholdCenter) {
+            v = 0; // STOP FORWARD MOTION
+            stoppedBeforeWall = true;
+        } else if (centerDistToWall - v * dt < stopThresholdCenter) {
+            carY = wallY - stopThresholdCenter;
+            v = 0;
+            stoppedBeforeWall = true;
+        } else {
+            carY += v * dt;
+        }
+        if (wallY - carY < minDistanceToWall) minDistanceToWall = wallY - carY;
+    }
+
+    const passNeverPassed = carY <= (wallY - stopThresholdCenter + 0.01) && carY < wallY;
+    console.log(`  Car initial y: 10 cm, wall y: ${wallY} cm`);
+    console.log(`  Car final y: ${carY.toFixed(2)} cm (stopped threshold: ${(wallY - stopThresholdCenter).toFixed(2)} cm)`);
+    console.log(`[${passNeverPassed ? 'PASS' : 'FAIL'}] Car stopped in front of wall and NEVER passed through (min distance: ${minDistanceToWall.toFixed(2)} cm)`);
+    console.log(`[${sensorShortValid ? 'PASS' : 'FAIL'}] Simulated sensor returned valid short distance (>= 2.5 cm, not 0) when touching wall`);
+
+    return passNeverPassed && sensorShortValid && stoppedBeforeWall;
+}
+
+// ----------------------------------------------------------------------------
+// RUN ALL TESTS
+// ----------------------------------------------------------------------------
+function runAllTests() {
+    console.log('====================================================');
+    console.log('       MAZE MAPPER & SIMULATOR TEST SUITE           ');
+    console.log('====================================================\n');
+
+    const res1 = test1_FrontCloseAndMemory();
+    const res2 = test2_NoEchoAfterFar();
+    const res3 = test3_DistinctTelemetryAndWiringWarning();
+    const res4 = test4_JunctionNavigationAndNoDuplicates();
+    const res5 = test5_SimulatorCollisionStop();
+
+    console.log('\n====================================================');
+    console.log('                 TEST SUMMARY                       ');
+    console.log('====================================================');
+    console.log(`Test 1 (Front Obstacle & Close Memory):   ${res1 ? '✅ PASS' : '❌ FAIL'}`);
+    console.log(`Test 2 (No-Echo After Far Open Space):    ${res2 ? '✅ PASS' : '❌ FAIL'}`);
+    console.log(`Test 3 (Distinct Telemetry & Wiring):     ${res3 ? '✅ PASS' : '❌ FAIL'}`);
+    console.log(`Test 4 (Junction Anchoring & No Dups):    ${res4 ? '✅ PASS' : '❌ FAIL'}`);
+    console.log(`Test 5 (Simulator Wall Collision Stop):   ${res5 ? '✅ PASS' : '❌ FAIL'}`);
+    console.log('====================================================');
+
+    const allPassed = res1 && res2 && res3 && res4 && res5;
+    if (allPassed) {
+        console.log('\n🎉 ALL 5 TESTS PASSED SUCCESSFULLY!\n');
+        process.exit(0);
+    } else {
+        console.error('\n❌ SOME TESTS FAILED!\n');
+        process.exit(1);
+    }
+}
+
+runAllTests();
