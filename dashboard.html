@@ -89,6 +89,10 @@
   .fill { position: absolute; top: 0; bottom: 0; background: var(--accent); }
   .fill.rev { background: var(--warn); }
 
+  .spinrow { display: flex; align-items: center; gap: 10px; margin: 8px 0; }
+  .spinrow .spinname { width: 78px; font-weight: 700; }
+  .spinrow input[type=range] { flex: 1; width: auto; }
+  .spinrow input[type=number] { width: 80px; }
   #log { background: #0c0e14; color: #8cf0cf; font-family: Consolas, monospace; font-size: .85rem; padding: 10px; border-radius: 8px; height: 130px; overflow-y: auto; }
 </style>
 </head>
@@ -178,6 +182,24 @@
       To calibrate: drive forward at Turbo; if it pulls to one side, the OTHER side is the faster one. Lower alpha until it goes straight.</div>
   </section>
 
+  <section class="card">
+    <h2>Spin in place (Left / Right alone)</h2>
+    <div class="spinrow">
+      <span class="spinname">Left spin</span>
+      <input type="range" id="spinLeftSlider" min="0" max="100" value="100" aria-label="Left spin strength">
+      <input type="number" id="spinLeftInput" min="0" max="1" step="0.01" value="1">
+    </div>
+    <div class="spinrow">
+      <span class="spinname">Right spin</span>
+      <input type="range" id="spinRightSlider" min="0" max="100" value="100" aria-label="Right spin strength">
+      <input type="number" id="spinRightInput" min="0" max="1" step="0.01" value="1">
+    </div>
+    <div style="margin-top:6px">
+      <label><input type="checkbox" id="spinInvertChk"> Reverse spin direction (use if Left spins right / Right spins left)</label>
+    </div>
+    <div class="hint">Spin speed = 255 &times; this value, independent of the main Speed setting (1 = full power, 0 = no spin). The Left slider applies when you press the Left key, the Right slider when you press Right. Saved on the laptop.</div>
+  </section>
+
   <section class="card wide">
     <h2>Activity log</h2>
     <div id="log"></div>
@@ -207,7 +229,7 @@
   var speed = SPEED.normal, turn = TURN.normal;
   var role = null, estop = false, smooth = true, brake = true;
   var boostKey = false;
-  var calib = { alpha: 1, fasterSide: 'left' };
+  var calib = { alpha: 1, fasterSide: 'left', spinLeft: 1, spinRight: 1, spinInvert: false };
   var lastDriveKey = '', wsLoggedDown = false, busy = false;
   var keyHeld = {};                       // 'up'|'down'|'left'|'right' -> true  (keyboard)
   var touchHeld = {};                     // pointerId -> dir                    (on-screen pad)
@@ -249,6 +271,13 @@
   function sendCalib(alpha, side) {
     if (!ws || ws.readyState !== 1) { log('Not connected - trim not sent.'); return; }
     ws.send(JSON.stringify({ type: 'calib', alpha: alpha, fasterSide: side }));
+  }
+  // Partial calibration update (only the fields given are changed by the server).
+  function sendCalibPart(part) {
+    if (!ws || ws.readyState !== 1) { log('Not connected - setting not sent.'); return; }
+    var m = { type: 'calib' };
+    for (var k in part) m[k] = part[k];
+    ws.send(JSON.stringify(m));
   }
 
   // ------------------------------ UI SYNC --------------------------------
@@ -336,11 +365,22 @@
   function applyConfig(c) {
     calib = {
       alpha: typeof c.alpha === 'number' ? c.alpha : 1,
-      fasterSide: c.fasterSide === 'right' ? 'right' : 'left'
+      fasterSide: c.fasterSide === 'right' ? 'right' : 'left',
+      spinLeft: typeof c.spinLeft === 'number' ? c.spinLeft : 1,
+      spinRight: typeof c.spinRight === 'number' ? c.spinRight : 1,
+      spinInvert: c.spinInvert === true
     };
+    if (document.activeElement !== $('spinLeftSlider') && document.activeElement !== $('spinLeftInput')) {
+      $('spinLeftSlider').value = Math.round(calib.spinLeft * 100); $('spinLeftInput').value = calib.spinLeft;
+    }
+    if (document.activeElement !== $('spinRightSlider') && document.activeElement !== $('spinRightInput')) {
+      $('spinRightSlider').value = Math.round(calib.spinRight * 100); $('spinRightInput').value = calib.spinRight;
+    }
+    $('spinInvertChk').checked = calib.spinInvert;
     if (document.activeElement !== $('alphaInput')) $('alphaInput').value = calib.alpha;
     if (document.activeElement !== $('fasterSide')) $('fasterSide').value = calib.fasterSide;
-    log('Trim: faster side = ' + calib.fasterSide.toUpperCase() + ', alpha = ' + calib.alpha);
+    log('Trim: faster side = ' + calib.fasterSide.toUpperCase() + ', alpha = ' + calib.alpha +
+        ' | spin L ' + calib.spinLeft + ', R ' + calib.spinRight + (calib.spinInvert ? ' (reversed)' : ''));
   }
 
   // ------------------------------ MATCH CLOCK ----------------------------
@@ -510,6 +550,32 @@
     var v = parseFloat($('alphaInput').value);
     if (isNaN(v)) v = calib.alpha;
     sendCalib(Math.max(0, Math.min(1, v)), e.target.value);
+    e.target.blur();
+  });
+
+  function clamp01(v) { return Math.max(0, Math.min(1, v)); }
+  function wireSpin(side) {                      // side: 'Left' | 'Right'
+    var slider = $('spin' + side + 'Slider'), input = $('spin' + side + 'Input'), key = 'spin' + side;
+    slider.addEventListener('input', function (e) {
+      var v = clamp01(parseInt(e.target.value, 10) / 100);
+      input.value = v;
+      var p = {}; p[key] = v; sendCalibPart(p);
+    });
+    slider.addEventListener('change', function (e) { log(side + ' spin strength -> ' + input.value); e.target.blur(); });
+    input.addEventListener('change', function (e) {
+      var v = parseFloat(e.target.value);
+      if (isNaN(v)) v = calib[key];
+      v = clamp01(v);
+      e.target.value = v; slider.value = Math.round(v * 100);
+      var p = {}; p[key] = v; sendCalibPart(p);
+      log(side + ' spin strength -> ' + v);
+    });
+  }
+  wireSpin('Left');
+  wireSpin('Right');
+  $('spinInvertChk').addEventListener('change', function (e) {
+    sendCalibPart({ spinInvert: e.target.checked });
+    log('Reverse spin direction ' + (e.target.checked ? 'ON' : 'OFF'));
     e.target.blur();
   });
 

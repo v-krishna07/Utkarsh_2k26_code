@@ -50,10 +50,14 @@ function loadCalib() {
         return { ...control.DEFAULT_CALIB };
     }
 }
-function saveCalib() {
-    fs.writeFile(CALIB_FILE, JSON.stringify(calib, null, 2), (err) => {
-        if (err) console.error('Could not save calibration:', err.message);
-    });
+let saveTimer = null;
+function saveCalib() {                                // debounced: sliders send many updates
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+        fs.writeFile(CALIB_FILE, JSON.stringify(calib, null, 2), (err) => {
+            if (err) console.error('Could not save calibration:', err.message);
+        });
+    }, 300);
 }
 let calib = loadCalib();
 
@@ -180,7 +184,14 @@ const sameIntent = (a, b) => a !== null && DRIVE_KEYS.every((k) => a[k] === b[k]
 function send(ws, obj) {
     if (ws && ws.readyState === WebSocket.OPEN && ws.bufferedAmount < 4096) ws.send(JSON.stringify(obj));
 }
-const configMsg = () => ({ type: 'config', alpha: calib.alpha, fasterSide: calib.fasterSide });
+const configMsg = () => ({
+    type: 'config',
+    alpha: calib.alpha, fasterSide: calib.fasterSide,
+    spinLeft: calib.spinLeft, spinRight: calib.spinRight, spinInvert: calib.spinInvert
+});
+const calibText = () =>
+    `faster side = ${calib.fasterSide}, alpha = ${calib.alpha}, ` +
+    `spin L = ${calib.spinLeft}, spin R = ${calib.spinRight}, spin reversed = ${calib.spinInvert}`;
 
 wss.on('connection', (ws) => {
     if (controller) {
@@ -213,7 +224,7 @@ wss.on('connection', (ws) => {
             saveCalib();
             send(ws, configMsg());
             step(Date.now());
-            console.log(`Calibration: faster side = ${calib.fasterSide}, alpha = ${calib.alpha}`);
+            console.log('Calibration: ' + calibText());
         }
     });
 
@@ -281,12 +292,13 @@ setInterval(() => step(Date.now()), TICK_MS);
 server.listen(PORT, HOST, () => {
     console.log(`Soccer controller running.  Open  http://localhost:${PORT}  in your browser.`);
     console.log(`Sending frames to the ESP32 at ${ESP32_IP}:${ESP32_PORT}  (heartbeat ${TICK_MS} ms, instant on input change)`);
-    console.log(`Calibration: faster side = ${calib.fasterSide}, alpha = ${calib.alpha}`);
+    console.log('Calibration: ' + calibText());
 });
 
 // Brake the robot on Ctrl+C or a crash.
 function shutdown(code) {
     console.log('\nShutting down - sending STOP.');
+    try { clearTimeout(saveTimer); fs.writeFileSync(CALIB_FILE, JSON.stringify(calib, null, 2)); } catch (_) {}
     sendStopBurst();
     setTimeout(() => process.exit(code), 120);
 }

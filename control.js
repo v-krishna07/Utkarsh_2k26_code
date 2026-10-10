@@ -8,14 +8,15 @@
 //       the slower side runs at G (maxed out)
 //    3. arcade mixing:
 //         Up/Down only            -> straight
-//         Left/Right only         -> spin in place
+//         Left/Right only         -> spin in place: 255 * spin strength (0..1) per side, NOT tied to global speed
 //         Up/Down + Left/Right    -> arc: inner wheel = corrected * (1 - 2t)
 //    4. dead-band, optional acceleration ramp
 //    5. 6-byte UDP frame for the ESP32 (the ESP32 only applies it)
 // ============================================================================
 
 const CONFIG = {
-    SPIN_SCALE: 1.0,      // spin-in-place speed = corrected speed * SPIN_SCALE (1.0 = fastest rotation)
+    SPIN_BASE: 255,       // spin-in-place base speed, independent of the global speed (spin = SPIN_BASE * strength)
+    SPIN_SCALE: 1.0,      // extra overall multiplier for spin (1.0 = leave as is)
     RAMP_PER_SEC: 3000,   // PWM units per second when "smooth" is on (3000 = 0 -> full in ~85 ms)
     MIN_PWM: 0,           // motor dead-band: any non-zero command is remapped to MIN_PWM..255 (0 = off)
     MAX_PWM: 255,         // hard cap on PWM (lower it, e.g. 191, to protect 9 V motors on a 12 V battery)
@@ -40,7 +41,12 @@ const NEUTRAL = Object.freeze({
     thr: 0, str: 0, speed: 0, turn: 0,
     boost: false, estop: false, smooth: false, brake: true
 });
-const DEFAULT_CALIB = Object.freeze({ alpha: 1, fasterSide: 'left' });
+// spinLeft / spinRight: strength (0..1) of spin-in-place when the Left / Right key is pressed alone.
+// spinInvert: flips the physical rotation direction of spin-in-place (Left key spins the other way).
+const DEFAULT_CALIB = Object.freeze({
+    alpha: 1, fasterSide: 'left',
+    spinLeft: 1, spinRight: 1, spinInvert: false
+});
 
 // ---- Stage 1: speed actually requested (boost lifts it) -----------------------
 function effectiveSpeed(input, cfg = CONFIG) {
@@ -67,9 +73,17 @@ function mix(input, calib, cfg = CONFIG) {
     if (thr === 0 && str === 0) return [0, 0];
 
     if (thr === 0) {                                   // spin in place
-        const s = cfg.SPIN_SCALE;
-        return str > 0 ? [fin(gl * s, cfg), fin(-gr * s, cfg)]
-                       : [fin(-gl * s, cfg), fin(gr * s, cfg)];
+        // The strength follows the KEY that is pressed (Left key -> spinLeft, Right key -> spinRight).
+        const strength = clamp(finite(str > 0 ? calib.spinRight : calib.spinLeft)
+                                   ? (str > 0 ? calib.spinRight : calib.spinLeft) : 1, 0, 1);
+        // Spin ignores the global speed: base is always SPIN_BASE (255), then strength 0..1 is applied.
+        // The alpha trim is still applied to that base so both sides spin evenly.
+        const { left: sl, right: sr } = globalSides(cfg.SPIN_BASE, calib);
+        const s = cfg.SPIN_SCALE * strength;
+        // spinInvert flips only the rotation direction, not which slider is used.
+        const clockwise = (str > 0) !== (calib.spinInvert === true);
+        return clockwise ? [fin(sl * s, cfg), fin(-sr * s, cfg)]
+                         : [fin(-sl * s, cfg), fin(sr * s, cfg)];
     }
 
     const k = 1 - 2 * clamp(finite(input.turn) ? input.turn : 0, 0, 1);
@@ -157,7 +171,10 @@ function sanitizeCalib(msg, current) {
     const cur = current || DEFAULT_CALIB;
     return {
         alpha: Math.round(num(msg.alpha, 0, 1, cur.alpha) * 1000) / 1000,
-        fasterSide: (msg.fasterSide === 'left' || msg.fasterSide === 'right') ? msg.fasterSide : cur.fasterSide
+        fasterSide: (msg.fasterSide === 'left' || msg.fasterSide === 'right') ? msg.fasterSide : cur.fasterSide,
+        spinLeft:  Math.round(num(msg.spinLeft,  0, 1, finite(cur.spinLeft)  ? cur.spinLeft  : 1) * 1000) / 1000,
+        spinRight: Math.round(num(msg.spinRight, 0, 1, finite(cur.spinRight) ? cur.spinRight : 1) * 1000) / 1000,
+        spinInvert: typeof msg.spinInvert === 'boolean' ? msg.spinInvert : cur.spinInvert === true
     };
 }
 
