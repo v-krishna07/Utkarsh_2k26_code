@@ -16,6 +16,7 @@ const dgram = require('dgram');
 const WebSocket = require('ws');
 const control = require('./control');
 const sensors = require('./sensors');
+const arm = require('./arm');
 
 // ---------------------------- CONFIG ----------------------------------------
 const ESP32_IP   = process.argv[2] || process.env.ESP32_IP || '192.168.4.1';
@@ -29,6 +30,7 @@ const TELEMETRY_MS      = 50;    // dashboard motor telemetry refresh (20 Hz)
 const SENSOR_TELEM_MS   = 40;    // sensor telemetry refresh (25 Hz)
 const MAX_SEND_QUEUE    = 4;     // drop frame instead of queueing more than this many
 const CALIB_FILE = process.env.CALIB_FILE || path.join(__dirname, 'calibration.json');
+const ARM_CALIB_FILE = process.env.ARM_CALIB_FILE || path.join(__dirname, 'arm_calibration.json');
 
 if (net.isIP(ESP32_IP) === 0) {
     console.error(`"${ESP32_IP}" is not a valid IP address.`);
@@ -54,6 +56,27 @@ function saveCalib() {
     }, 300);
 }
 let calib = loadCalib();
+
+// ---------------------------- ARM CALIBRATION (persisted) -------------------
+function loadArmCalib() {
+    try {
+        const j = JSON.parse(fs.readFileSync(ARM_CALIB_FILE, 'utf8'));
+        return arm.sanitizeArmConfig(j, arm.DEFAULT_CONFIG);
+    } catch (_) {
+        return { ...arm.DEFAULT_CONFIG };
+    }
+}
+let saveArmTimer = null;
+function saveArmCalib() {
+    clearTimeout(saveArmTimer);
+    saveArmTimer = setTimeout(() => {
+        fs.writeFile(ARM_CALIB_FILE, JSON.stringify(armCalib, null, 2), (err) => {
+            if (err) console.error('Could not save arm calibration:', err.message);
+        });
+    }, 300);
+}
+let armCalib = loadArmCalib();
+const armEngine = arm.createArmEngine(armCalib);
 
 // ---------------------------- SENSOR STATE ----------------------------------
 const sensorState = sensors.createSensorState();
@@ -97,6 +120,13 @@ function sendStopBurst() {
     udpSend(f);
     setTimeout(() => udpSend(f), 20);
     setTimeout(() => udpSend(f), 40);
+}
+
+function sendArmFrame(liftDuty, gripDuty) {
+    let queued = 0;
+    try { queued = udp.getSendQueueSize(); } catch (_) {}
+    if (queued > MAX_SEND_QUEUE) return;
+    udpSend(arm.toArmFrame(liftDuty, gripDuty));
 }
 
 // ---------------------------- CONTROL ENGINE --------------------------------
@@ -249,6 +279,8 @@ server.on('upgrade', (req, socket, head) => {
 let controller = null;
 let lastTelemetryAt = 0;
 let lastSensorTelemAt = 0;
+let lastArmSendAt = 0;
+let lastArmTelemAt = 0;
 
 function send(ws, obj) {
     if (ws && ws.readyState === WebSocket.OPEN && ws.bufferedAmount < 4096) {
@@ -304,9 +336,18 @@ wss.on('connection', (ws) => {
     }
     controller = ws;
     engine.reset();
+    armEngine.reset();
     console.log('>>> Dashboard connected.');
     send(ws, configMsg());
+    send(ws, { type: 'armConfig', ...armCalib });
     send(ws, makeSensorPayload(Date.now()));
+    const initialArmSt = armEngine.step(Date.now());
+    send(ws, {
+        type: 'arm',
+        liftAngle: Math.round(initialArmSt.liftAngle * 10) / 10,
+        gripAngle: Math.round(initialArmSt.gripAngle * 10) / 10,
+        moving: initialArmSt.moving
+    });
 
     ws.on('message', (raw) => {
         let msg;
@@ -326,6 +367,21 @@ wss.on('connection', (ws) => {
         } else if (msg.type === 'sensorConfig') {
             sensors.updateSensorConfig(sensorState, msg);
             send(ws, makeSensorPayload(Date.now()));
+        } else if (msg.type === 'armIntent') {
+            const nextArm = arm.sanitizeArmIntent(msg);
+            armEngine.setIntent(nextArm, Date.now());
+            const aOut = armEngine.step(Date.now());
+            if (aOut.dutyChanged || aOut.moving) {
+                lastArmSendAt = Date.now();
+                sendArmFrame(aOut.liftDuty, aOut.gripDuty);
+            }
+        } else if (msg.type === 'armConfig') {
+            armCalib = arm.sanitizeArmConfig(msg, armCalib);
+            armEngine.updateConfig(armCalib);
+            saveArmCalib();
+            send(ws, { type: 'armConfig', ...armCalib });
+            const aOut = armEngine.step(Date.now());
+            sendArmFrame(aOut.liftDuty, aOut.gripDuty);
         }
     });
 
@@ -333,6 +389,7 @@ wss.on('connection', (ws) => {
         if (controller !== ws) return;
         controller = null;
         engine.reset();
+        armEngine.reset();
         console.log('>>> Dashboard disconnected - sending STOP.');
         sendStopBurst();
     });
@@ -340,7 +397,7 @@ wss.on('connection', (ws) => {
     ws.on('error', (err) => console.error('WebSocket error:', err.message));
 });
 
-// Periodic control, motor telemetry (20 Hz), and sensor telemetry (25 Hz)
+// Periodic control, motor telemetry (20 Hz), sensor telemetry (25 Hz), and arm control (50 Hz)
 setInterval(() => {
     const now = Date.now();
 
@@ -368,6 +425,28 @@ setInterval(() => {
         lastSensorTelemAt = now;
         send(controller, makeSensorPayload(now));
     }
+
+    // Arm control step & UDP transmission (50 Hz while moving, 5 Hz heartbeat when idle)
+    const aOut = armEngine.step(now);
+    const armTargetChanged = aOut.dutyChanged;
+    const isArmMoving = aOut.moving;
+    const armHeartbeatDue = now - lastArmSendAt >= 200; // 5 Hz heartbeat (200 ms)
+
+    if (isArmMoving || armTargetChanged || armHeartbeatDue) {
+        lastArmSendAt = now;
+        sendArmFrame(aOut.liftDuty, aOut.gripDuty);
+    }
+
+    // Arm telemetry to dashboard
+    if (controller && (isArmMoving || now - lastArmTelemAt >= 100)) {
+        lastArmTelemAt = now;
+        send(controller, {
+            type: 'arm',
+            liftAngle: Math.round(aOut.liftAngle * 10) / 10,
+            gripAngle: Math.round(aOut.gripAngle * 10) / 10,
+            moving: aOut.moving
+        });
+    }
 }, TICK_MS);
 
 if (require.main === module) {
@@ -381,6 +460,7 @@ if (require.main === module) {
 function shutdown(code) {
     console.log('\nShutting down - sending STOP.');
     try { clearTimeout(saveTimer); fs.writeFileSync(CALIB_FILE, JSON.stringify(calib, null, 2)); } catch (_) {}
+    try { clearTimeout(saveArmTimer); fs.writeFileSync(ARM_CALIB_FILE, JSON.stringify(armCalib, null, 2)); } catch (_) {}
     sendStopBurst();
     setTimeout(() => process.exit(code), 120);
 }
@@ -394,4 +474,7 @@ module.exports = {
     calib,
     sendFrame,
     makeSensorPayload,
+    armEngine,
+    armCalib,
+    sendArmFrame,
 };

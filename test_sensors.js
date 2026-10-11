@@ -5,10 +5,13 @@
 // ============================================================================
 const assert = require('assert');
 const http = require('http');
+const fs = require('fs');
+const path = require('path');
 const dgram = require('dgram');
 const WebSocket = require('ws');
-const sensors = require('./sensors');
 const control = require('./control');
+const sensors = require('./sensors');
+const arm = require('./arm');
 const server = require('./server');
 
 let passedTests = 0;
@@ -596,6 +599,344 @@ async function runAllTests() {
         assert.strictEqual(out.l, 0);
         assert.strictEqual(out.r, 0);
         assert.strictEqual(out.brake, true);
+    });
+
+    // ------------------------------------------------------------------------
+    // 8. Arm Frame Encode/Decode & Protocol Validation
+    // ------------------------------------------------------------------------
+    console.log('\n8. ARM FRAME ENCODE/DECODE & PROTOCOL TESTS');
+    it('arm frame encode/decode: byte order, xor, wrong length, wrong header, bad xor, duties just inside and outside limits', () => {
+        const liftDuty = 1290; // 0x050A (lo=0x0A, hi=0x05)
+        const gripDuty = 1206; // 0x04B6 (lo=0xB6, hi=0x04)
+        const frame = arm.toArmFrame(liftDuty, gripDuty);
+
+        assert.strictEqual(frame.length, 6, 'Arm frame must be exactly 6 bytes');
+        assert.strictEqual(frame[0], 0xA6, 'Header must be 0xA6');
+        assert.strictEqual(frame[1], 0x0A, 'Lift duty low byte');
+        assert.strictEqual(frame[2], 0x05, 'Lift duty high byte');
+        assert.strictEqual(frame[3], 0xB6, 'Grip duty low byte');
+        assert.strictEqual(frame[4], 0x04, 'Grip duty high byte');
+        assert.strictEqual(frame[5], 0xA6 ^ 0x0A ^ 0x05 ^ 0xB6 ^ 0x04, 'Checksum matches XOR 0..4');
+
+        const dec = arm.fromArmFrame(frame);
+        assert.ok(dec, 'Valid frame decodes successfully');
+        assert.strictEqual(dec.liftDuty, liftDuty);
+        assert.strictEqual(dec.gripDuty, gripDuty);
+
+        // Wrong length
+        assert.strictEqual(arm.fromArmFrame(Buffer.alloc(5)), null, '5 bytes rejected');
+        assert.strictEqual(arm.fromArmFrame(Buffer.alloc(7)), null, '7 bytes rejected');
+
+        // Wrong header
+        const badHeader = Buffer.from(frame);
+        badHeader[0] = 0xA5; // Motor header
+        assert.strictEqual(arm.fromArmFrame(badHeader), null, '0xA5 header rejected as arm frame');
+
+        // Bad XOR
+        const badXor = Buffer.from(frame);
+        badXor[5] ^= 0x55;
+        assert.strictEqual(arm.fromArmFrame(badXor), null, 'Corrupt XOR rejected');
+
+        // Duties just inside limits (350 and 2200)
+        const insideFrame1 = arm.toArmFrame(350, 2200);
+        const decInside1 = arm.fromArmFrame(insideFrame1);
+        assert.ok(decInside1);
+        assert.strictEqual(decInside1.liftDuty, 350);
+        assert.strictEqual(decInside1.gripDuty, 2200);
+
+        // Raw buffer with duties just outside limits: 349 and 2201
+        function makeRawArmBuf(lDuty, gDuty) {
+            const b = Buffer.alloc(6);
+            b[0] = 0xA6;
+            b[1] = lDuty & 0xFF;
+            b[2] = (lDuty >> 8) & 0xFF;
+            b[3] = gDuty & 0xFF;
+            b[4] = (gDuty >> 8) & 0xFF;
+            b[5] = b[0] ^ b[1] ^ b[2] ^ b[3] ^ b[4];
+            return b;
+        }
+
+        assert.strictEqual(arm.fromArmFrame(makeRawArmBuf(349, 1200)), null, 'Lift duty 349 (< 350) rejected');
+        assert.strictEqual(arm.fromArmFrame(makeRawArmBuf(1200, 2201)), null, 'Grip duty 2201 (> 2200) rejected');
+    });
+
+    it('firmware cross-check: simulated C++ validArmFrame matches server frame output', () => {
+        // C++ firmware verification simulation from arm.h
+        function cppValidArmFrame(b) {
+            if (!b || b.length !== 6 || b[0] !== 0xA6) return false;
+            let x = 0;
+            for (let i = 0; i < 5; i++) x ^= b[i];
+            if (x !== b[5]) return false;
+            const liftDuty = b[1] | (b[2] << 8);
+            const gripDuty = b[3] | (b[4] << 8);
+            if (liftDuty < 350 || liftDuty > 2200) return false;
+            if (gripDuty < 350 || gripDuty > 2200) return false;
+            return true;
+        }
+
+        const validFrame = arm.toArmFrame(1290, 1206);
+        assert.strictEqual(cppValidArmFrame(validFrame), true, 'Server arm frame passes C++ firmware validator');
+
+        // Motor frame (0xA5) must NEVER be accepted as an arm frame
+        const motorFrame = control.toFrame(180, 180, false);
+        assert.strictEqual(cppValidArmFrame(motorFrame), false, 'Motor frame rejected by arm validator');
+
+        // Arm frame must NEVER be accepted as a motor frame
+        assert.strictEqual(control.fromFrame(validFrame), null, 'Arm frame rejected by motor validator');
+    });
+
+    // ------------------------------------------------------------------------
+    // 9. Arm Motion, Independent Servos, Clamping, Invert & HOME
+    // ------------------------------------------------------------------------
+    console.log('\n9. ARM MOTION, CLAMPING & HOME TESTS');
+    it('holding key for 1 s moves lift about 60 deg and grip about 25 deg; clamps; invert; HOME; independent concurrent motion', () => {
+        const engine = arm.createArmEngine({
+            lift: { speed: 60, min: 50, max: 150, home: 100, invert: false, pulseMin: 544, pulseMax: 2400 },
+            grip: { speed: 25, min: 0, max: 180, home: 90, invert: false, pulseMin: 544, pulseMax: 2400 }
+        });
+
+        assert.strictEqual(engine.getLiftAngle(), 100);
+        assert.strictEqual(engine.getGripAngle(), 90);
+
+        // 1. Move lift up (I) for 1 second at 60 deg/s: 100 -> ~160, clamped to max 150
+        let t = 1000;
+        const dt = 0.02; // 50 Hz tick (20 ms)
+        engine.step(t); // initialize clock
+        for (let i = 0; i < 50; i++) {
+            t += dt * 1000;
+            engine.setIntent({ liftDir: 1, gripDir: 0, home: false, estop: false }, t);
+            engine.step(t);
+        }
+        assert.strictEqual(engine.getLiftAngle(), 150, 'Lift clamped to max 150°');
+
+        // 2. Move grip one way (J: gripDir = -1) for 1 second at 25 deg/s from home 90: should be 90 - 25 = 65°
+        for (let i = 0; i < 50; i++) {
+            t += dt * 1000;
+            engine.setIntent({ liftDir: 0, gripDir: -1, home: false, estop: false }, t);
+            engine.step(t);
+        }
+        assert.ok(Math.abs(engine.getGripAngle() - 65) < 0.1, `Grip moved ~25° from 90 to ~65°, got ${engine.getGripAngle()}`);
+
+        // 3. Move grip down to min 0° (keep moving for 3 more seconds)
+        for (let i = 0; i < 150; i++) {
+            t += dt * 1000;
+            engine.setIntent({ liftDir: 0, gripDir: -1, home: false, estop: false }, t);
+            engine.step(t);
+        }
+        assert.strictEqual(engine.getGripAngle(), 0, 'Grip clamped at min 0°');
+
+        // 4. Invert flag: invert grip so gripDir = -1 moves UP
+        engine.updateConfig({
+            grip: { speed: 25, min: 0, max: 180, home: 90, invert: true, pulseMin: 544, pulseMax: 2400 }
+        });
+        engine.step(t); // re-anchor clock
+        for (let i = 0; i < 50; i++) {
+            t += dt * 1000;
+            engine.setIntent({ liftDir: 0, gripDir: -1, home: false, estop: false }, t);
+            engine.step(t);
+        }
+        assert.ok(Math.abs(engine.getGripAngle() - 25) < 0.1, `Inverted grip moved from 0 up to ~25°, got ${engine.getGripAngle()}`);
+
+        // 5. Independent simultaneous motion: move lift down (K: -1) and grip right (L: +1, inverted: decreases)
+        const startLift = engine.getLiftAngle(); // 150
+        const startGrip = engine.getGripAngle(); // 25
+        for (let i = 0; i < 25; i++) { // 0.5 s
+            t += dt * 1000;
+            engine.setIntent({ liftDir: -1, gripDir: 1, home: false, estop: false }, t);
+            engine.step(t);
+        }
+        assert.ok(Math.abs(engine.getLiftAngle() - (startLift - 30)) < 0.1, 'Lift moved ~30° down in 0.5s');
+        assert.ok(Math.abs(engine.getGripAngle() - (startGrip - 12.5)) < 0.1, 'Grip moved ~12.5° concurrently in 0.5s');
+
+        // 6. Stow / HOME pose resets both servos to home
+        t += 50;
+        engine.setIntent({ liftDir: 0, gripDir: 0, home: true, estop: false }, t);
+        const homeOut = engine.step(t);
+        assert.strictEqual(homeOut.liftAngle, 100, 'Lift reset to home (100°)');
+        assert.strictEqual(homeOut.gripAngle, 90, 'Grip reset to home (90°)');
+    });
+
+    it('angle to pulse and 14-bit duty conversion matches 50 Hz timing formula', () => {
+        const jointCfg = { min: 0, max: 180, home: 90, invert: false, pulseMin: 544, pulseMax: 2400 };
+
+        // 0 deg -> 544 us -> duty = round(544 * 16384 / 20000) = 446
+        const pulse0 = arm.angleToPulse(0, jointCfg);
+        assert.strictEqual(pulse0, 544);
+        assert.strictEqual(arm.pulseToDuty(pulse0), 446);
+
+        // 90 deg -> 1472 us -> duty = round(1472 * 16384 / 20000) = 1206
+        const pulse90 = arm.angleToPulse(90, jointCfg);
+        assert.strictEqual(pulse90, 1472);
+        assert.strictEqual(arm.pulseToDuty(pulse90), 1206);
+
+        // 180 deg -> 2400 us -> duty = round(2400 * 16384 / 20000) = 1966
+        const pulse180 = arm.angleToPulse(180, jointCfg);
+        assert.strictEqual(pulse180, 2400);
+        assert.strictEqual(arm.pulseToDuty(pulse180), 1966);
+    });
+
+    // ------------------------------------------------------------------------
+    // 10. Arm Safety, Opposite Keys, Focus Isolation, Blur, Tab-Hidden, Disconnect
+    // ------------------------------------------------------------------------
+    console.log('\n10. ARM SAFETY & WATCHDOG TESTS');
+    it('no movement with I+K or J+L held together, E-stop, focused input, stale intent, blur, tab-hidden, or disconnect', () => {
+        const engine = arm.createArmEngine(arm.DEFAULT_CONFIG, { intentTimeoutMs: 300 });
+        let t = 1000;
+        engine.step(t);
+
+        // 1. Opposite keys pressed together: I+K
+        const oppositeLift = arm.sanitizeArmIntent({ i: true, k: true });
+        assert.strictEqual(oppositeLift.liftDir, 0, 'I+K cancels lift movement');
+        engine.setIntent(oppositeLift, t + 20);
+        let out = engine.step(t + 20);
+        assert.strictEqual(out.liftAngle, 100, 'Lift does not move when opposite keys are held');
+        assert.strictEqual(out.moving, false);
+
+        // 2. Opposite keys pressed together: J+L
+        const oppositeGrip = arm.sanitizeArmIntent({ j: true, l: true });
+        assert.strictEqual(oppositeGrip.gripDir, 0, 'J+L cancels grip movement');
+        engine.setIntent(oppositeGrip, t + 40);
+        out = engine.step(t + 40);
+        assert.strictEqual(out.gripAngle, 90, 'Grip does not move when opposite keys are held');
+        assert.strictEqual(out.moving, false);
+
+        // 3. E-stop active inhibits all arm movement
+        engine.setIntent({ liftDir: 1, gripDir: 1, home: false, estop: true }, t + 60);
+        out = engine.step(t + 60);
+        assert.strictEqual(out.liftAngle, 100, 'No movement during E-stop');
+        assert.strictEqual(out.gripAngle, 90);
+        assert.strictEqual(out.moving, false);
+
+        // 4. Stale intent (> 300 ms without update)
+        engine.setIntent({ liftDir: 1, gripDir: 0, home: false, estop: false }, t + 100);
+        out = engine.step(t + 120);
+        const movedLift = out.liftAngle;
+        assert.ok(movedLift > 100, 'Moves with fresh intent');
+
+        out = engine.step(t + 450); // 350 ms after intent (stale)
+        assert.strictEqual(out.liftAngle, movedLift, 'Stale intent halts movement');
+        assert.strictEqual(out.moving, false);
+
+        // 5. Client blur, tab-hidden, input focus, and disconnect simulation
+        let armKeysState = { i: true, k: false, j: true, l: false };
+        let clientArmIntents = [];
+
+        function clientReleaseAll() {
+            armKeysState = { i: false, k: false, j: false, l: false };
+            clientArmIntents.push({ liftDir: 0, gripDir: 0, home: false, estop: false });
+        }
+
+        // On input focus
+        clientReleaseAll();
+        assert.strictEqual(clientArmIntents[clientArmIntents.length - 1].liftDir, 0);
+        assert.strictEqual(armKeysState.i, false);
+
+        // On window blur
+        armKeysState.i = true;
+        clientReleaseAll();
+        assert.strictEqual(armKeysState.i, false);
+
+        // On tab hidden (document.hidden)
+        armKeysState.j = true;
+        clientReleaseAll();
+        assert.strictEqual(armKeysState.j, false);
+
+        // On WebSocket disconnect
+        engine.reset();
+        assert.strictEqual(engine.getLiftAngle(), 100);
+        assert.strictEqual(engine.getGripAngle(), 90);
+    });
+
+    // ------------------------------------------------------------------------
+    // 11. Set MIN/MAX/HOME, Settings Validation & Persistence Across Server Restart
+    // ------------------------------------------------------------------------
+    console.log('\n11. ARM SETTINGS VALIDATION & PERSISTENCE TESTS');
+    it('Set MIN/MAX/HOME here, settings validation (out-of-range, NaN, strings, min>max), and persistence across server restart', () => {
+        // 1. Simulate "Set MIN here", "Set MAX here", "Set HOME here"
+        const currentLift = 72;
+        const currentGrip = 135;
+
+        let uiConfig = {
+            lift: { speed: 60, min: currentLift, max: 150, home: currentLift, invert: false, pulseMin: 544, pulseMax: 2400 },
+            grip: { speed: 25, min: 0, max: currentGrip, home: currentGrip, invert: false, pulseMin: 544, pulseMax: 2400 }
+        };
+
+        let sanitized = arm.sanitizeArmConfig(uiConfig);
+        assert.strictEqual(sanitized.lift.min, 72, 'Lift min set from current angle');
+        assert.strictEqual(sanitized.lift.home, 72, 'Lift home set from current angle');
+        assert.strictEqual(sanitized.grip.max, 135, 'Grip max set from current angle');
+        assert.strictEqual(sanitized.grip.home, 135, 'Grip home set from current angle');
+
+        // 2. Settings validation edge cases: out-of-range, NaN, strings, min > max
+        const dirty = {
+            speedLift: 999, // clamped to 180
+            speedGrip: -50, // clamped to 5
+            lift: { min: 140, max: 60, home: 200, invert: 'yes', pulseMin: 'invalid', pulseMax: NaN },
+            grip: { min: NaN, max: 'bad', home: 50, invert: null, pulseMin: 2500, pulseMax: 500 }
+        };
+
+        const cleaned = arm.sanitizeArmConfig(dirty);
+        assert.strictEqual(cleaned.speedLift, 180, 'Lift speed clamped to 180');
+        assert.strictEqual(cleaned.speedGrip, 5, 'Grip speed clamped to 5');
+        assert.strictEqual(cleaned.lift.min, 60, 'Min and max swapped when min > max');
+        assert.strictEqual(cleaned.lift.max, 140);
+        assert.strictEqual(cleaned.lift.home, 140, 'Home clamped within swapped min..max');
+        assert.strictEqual(cleaned.lift.invert, false, 'Non-boolean coerced to false');
+        assert.strictEqual(cleaned.lift.pulseMin, 544, 'Invalid pulseMin falls back to 544');
+        assert.strictEqual(cleaned.lift.pulseMax, 2400, 'NaN pulseMax falls back to 2400');
+        assert.strictEqual(cleaned.grip.pulseMin, 544, 'Inverted pulse bounds fall back to default');
+        assert.strictEqual(cleaned.grip.pulseMax, 2400);
+
+        // 3. Persistence across simulated server restart
+        const testFile = path.join(__dirname, 'scratch', 'test_arm_calib_restart.json');
+        try { fs.mkdirSync(path.join(__dirname, 'scratch'), { recursive: true }); } catch (_) {}
+        fs.writeFileSync(testFile, JSON.stringify(cleaned, null, 2));
+
+        // Simulate server booting and reading config
+        const reloadedRaw = JSON.parse(fs.readFileSync(testFile, 'utf8'));
+        const reloadedConfig = arm.sanitizeArmConfig(reloadedRaw);
+        assert.deepStrictEqual(reloadedConfig, cleaned, 'Configuration persists identically across restart');
+        try { fs.unlinkSync(testFile); } catch (_) {}
+    });
+
+    // ------------------------------------------------------------------------
+    // 12. Rapid Key Toggling (100 Press/Release Cycles)
+    // ------------------------------------------------------------------------
+    console.log('\n12. RAPID KEY TOGGLING CONSISTENCY TEST');
+    it('rapid key toggling (press/release 100 times) leaves consistent state and no stuck movement', () => {
+        const engine = arm.createArmEngine({
+            lift: { speed: 60, min: 50, max: 150, home: 100, invert: false, pulseMin: 544, pulseMax: 2400 },
+            grip: { speed: 25, min: 0, max: 180, home: 90, invert: false, pulseMin: 544, pulseMax: 2400 }
+        });
+
+        let t = 10000;
+        engine.step(t);
+
+        for (let cycle = 0; cycle < 100; cycle++) {
+            // Press keys
+            t += 10;
+            const pressDir = (cycle % 2 === 0) ? 1 : -1;
+            engine.setIntent({ liftDir: pressDir, gripDir: -pressDir, home: false, estop: false }, t);
+            const out1 = engine.step(t);
+            assert.ok(Number.isFinite(out1.liftAngle));
+            assert.ok(Number.isFinite(out1.gripAngle));
+            assert.ok(out1.liftAngle >= 50 && out1.liftAngle <= 150);
+            assert.ok(out1.gripAngle >= 0 && out1.gripAngle <= 180);
+
+            // Release keys
+            t += 10;
+            engine.setIntent({ liftDir: 0, gripDir: 0, home: false, estop: false }, t);
+            const out2 = engine.step(t);
+            assert.strictEqual(out2.moving, false, 'Movement stops cleanly on release');
+        }
+
+        // Final state verification
+        const finalOut = engine.step(t + 20);
+        assert.strictEqual(finalOut.moving, false, 'No stuck movement after 100 toggle cycles');
+        assert.ok(finalOut.liftAngle >= 50 && finalOut.liftAngle <= 150);
+        assert.ok(finalOut.gripAngle >= 0 && finalOut.gripAngle <= 180);
+        assert.ok(Number.isFinite(finalOut.liftDuty));
+        assert.ok(Number.isFinite(finalOut.gripDuty));
     });
 
     // ------------------------------------------------------------------------

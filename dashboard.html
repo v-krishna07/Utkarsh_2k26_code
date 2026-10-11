@@ -278,6 +278,96 @@
     </table>
   </section>
 
+  <section class="card" id="armCard">
+    <h2>Robotic Arm (2 Servos)</h2>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+      <div>
+        <div style="font-size:0.85rem; color:var(--accent); font-weight:700;">LIFT (DOWN/UP)</div>
+        <div class="bignum" style="font-size:2.4rem;"><span id="armLiftAngle">100</span><small>°</small></div>
+      </div>
+      <div>
+        <div style="font-size:0.85rem; color:var(--blue); font-weight:700;">GRIP (ROTATES)</div>
+        <div class="bignum" style="font-size:2.4rem;"><span id="armGripAngle">90</span><small>°</small></div>
+      </div>
+      <div id="armStatusBadge" class="pill" style="font-size:0.85rem; padding:4px 10px;">IDLE</div>
+    </div>
+
+    <div class="row" style="margin-bottom:8px;">
+      <button id="btnLiftUp" style="font-size:0.9rem;">▲ Lift Up [I]</button>
+      <button id="btnLiftDown" style="font-size:0.9rem;">Lift Down [K] ▼</button>
+    </div>
+    <div class="row" style="margin-bottom:8px;">
+      <button id="btnGripLeft" style="font-size:0.9rem;">◀ Grip [J]</button>
+      <button id="btnGripRight" style="font-size:0.9rem;">Grip [L] ▶</button>
+    </div>
+    <div class="row" style="margin-bottom:12px;">
+      <button id="btnArmHome" style="width:100%; border-color:var(--accent); color:var(--accent);">Stow / HOME [H]</button>
+    </div>
+
+    <!-- Dual Speed Sliders -->
+    <div style="margin-bottom:8px;">
+      <div style="display:flex; justify-content:space-between; font-size:0.9rem; color:var(--dim); margin-bottom:4px;">
+        <span>Lift Speed</span>
+        <span><strong id="liftSpeedNum" style="color:var(--text);">60</strong> deg/s</span>
+      </div>
+      <input type="range" id="liftSpeedSlider" min="10" max="180" value="60" aria-label="Lift speed 10 to 180 deg/s">
+    </div>
+    <div style="margin-bottom:10px;">
+      <div style="display:flex; justify-content:space-between; font-size:0.9rem; color:var(--dim); margin-bottom:4px;">
+        <span>Grip Speed (slower)</span>
+        <span><strong id="gripSpeedNum" style="color:var(--text);">25</strong> deg/s</span>
+      </div>
+      <input type="range" id="gripSpeedSlider" min="5" max="120" value="25" aria-label="Grip speed 5 to 120 deg/s">
+    </div>
+
+    <table class="keys" style="margin-bottom:12px;">
+      <tr><td><kbd>I</kbd> / <kbd>K</kbd></td><td>Lift Up / Down</td></tr>
+      <tr><td><kbd>J</kbd> / <kbd>L</kbd></td><td>Grip Rotate (opposite keys stop)</td></tr>
+      <tr><td><kbd>H</kbd></td><td>Stow / HOME pose (≤ 12 cm width)</td></tr>
+    </table>
+
+    <details class="threshold-details" style="margin-top:6px;">
+      <summary>Arm Settings (Limits &amp; Trim)</summary>
+      <div style="margin-top:10px; font-size:0.9rem;">
+        <!-- LIFT SERVO -->
+        <div style="font-weight:700; color:var(--accent); margin-bottom:4px;">Lift Servo (GPIO 13)</div>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-bottom:6px;">
+          <label>Min (°): <input type="number" id="liftMinInput" min="0" max="180" value="50" style="width:68px;"></label>
+          <label>Max (°): <input type="number" id="liftMaxInput" min="0" max="180" value="150" style="width:68px;"></label>
+          <label>Home (°): <input type="number" id="liftHomeInput" min="0" max="180" value="100" style="width:68px;"></label>
+          <label><input type="checkbox" id="liftInvertChk"> Invert</label>
+        </div>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-bottom:6px;">
+          <label>Pulse Min (µs): <input type="number" id="liftPulseMinInput" value="544" style="width:74px;"></label>
+          <label>Pulse Max (µs): <input type="number" id="liftPulseMaxInput" value="2400" style="width:74px;"></label>
+        </div>
+        <div class="row" style="gap:4px; margin-bottom:12px;">
+          <button id="btnLiftSetMin" style="font-size:0.75rem; padding:4px 6px;">Set MIN here</button>
+          <button id="btnLiftSetMax" style="font-size:0.75rem; padding:4px 6px;">Set MAX here</button>
+          <button id="btnLiftSetHome" style="font-size:0.75rem; padding:4px 6px;">Set HOME here</button>
+        </div>
+
+        <!-- GRIP SERVO -->
+        <div style="font-weight:700; color:var(--blue); margin-bottom:4px;">Grip Servo (GPIO 32)</div>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-bottom:6px;">
+          <label>Min (°): <input type="number" id="gripMinInput" min="0" max="180" value="0" style="width:68px;"></label>
+          <label>Max (°): <input type="number" id="gripMaxInput" min="0" max="180" value="180" style="width:68px;"></label>
+          <label>Home (°): <input type="number" id="gripHomeInput" min="0" max="180" value="90" style="width:68px;"></label>
+          <label><input type="checkbox" id="gripInvertChk"> Invert</label>
+        </div>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-bottom:6px;">
+          <label>Pulse Min (µs): <input type="number" id="gripPulseMinInput" value="544" style="width:74px;"></label>
+          <label>Pulse Max (µs): <input type="number" id="gripPulseMaxInput" value="2400" style="width:74px;"></label>
+        </div>
+        <div class="row" style="gap:4px;">
+          <button id="btnGripSetMin" style="font-size:0.75rem; padding:4px 6px;">Set MIN here</button>
+          <button id="btnGripSetMax" style="font-size:0.75rem; padding:4px 6px;">Set MAX here</button>
+          <button id="btnGripSetHome" style="font-size:0.75rem; padding:4px 6px;">Set HOME here</button>
+        </div>
+      </div>
+    </details>
+  </section>
+
   <section class="card">
     <h2>Motor output</h2>
     <div class="motor"><span class="name">L</span><div class="bar"><div class="fill" id="barL"></div></div><span class="val" id="valL">0</span></div>
@@ -472,6 +562,164 @@
     }
   }
 
+  // ------------------------------ ARM CONTROL & CONFIG -------------------
+  var ARM_STORAGE_KEY = 'soccer_bot_arm_cfg';
+  var armKeys = { j: false, l: false, i: false, k: false };
+  var armButtons = { j: false, l: false, i: false, k: false };
+  var armHomeActive = false;
+  var currentArmAngles = { lift: 100, grip: 90 };
+  var armConfig = {
+    lift: { speed: 60, min: 50, max: 150, home: 100, invert: false, pulseMin: 544, pulseMax: 2400 },
+    grip: { speed: 25, min: 0, max: 180, home: 90, invert: false, pulseMin: 544, pulseMax: 2400 }
+  };
+
+  function readArmInput() {
+    if (estop || isInputFocused) {
+      return { liftDir: 0, gripDir: 0, home: false, estop: estop };
+    }
+    var up = armKeys.i || armButtons.i;
+    var down = armKeys.k || armButtons.k;
+    var left = armKeys.j || armButtons.j;
+    var right = armKeys.l || armButtons.l;
+
+    // Opposite keys cancel
+    var liftDir = (up && down) ? 0 : (up ? 1 : (down ? -1 : 0));
+    var gripDir = (left && right) ? 0 : (right ? 1 : (left ? -1 : 0));
+
+    return {
+      liftDir: liftDir,
+      gripDir: gripDir,
+      home: armHomeActive,
+      estop: false
+    };
+  }
+
+  function sendArmIntent() {
+    if (!wsReady()) return;
+    var inp = readArmInput();
+    ws.send(JSON.stringify({
+      type: 'armIntent',
+      liftDir: inp.liftDir,
+      gripDir: inp.gripDir,
+      home: inp.home,
+      estop: estop
+    }));
+  }
+
+  function triggerHome() {
+    if (estop || isInputFocused) return;
+    armHomeActive = true;
+    sendArmIntent();
+    log('Arm -> Stow / HOME pose requested.');
+    setTimeout(function () {
+      armHomeActive = false;
+      sendArmIntent();
+    }, 120);
+  }
+
+  function loadArmSettings() {
+    try {
+      var raw = localStorage.getItem(ARM_STORAGE_KEY);
+      if (raw) return JSON.parse(raw);
+    } catch (_) {}
+    return armConfig;
+  }
+
+  function saveArmSettings(cfg) {
+    try {
+      localStorage.setItem(ARM_STORAGE_KEY, JSON.stringify(cfg));
+    } catch (_) {}
+  }
+
+  function readArmConfigFromUI() {
+    var lSpeed = parseInt($('liftSpeedSlider').value, 10) || 60;
+    var gSpeed = parseInt($('gripSpeedSlider').value, 10) || 25;
+    $('liftSpeedNum').textContent = lSpeed;
+    $('gripSpeedNum').textContent = gSpeed;
+
+    return {
+      type: 'armConfig',
+      speedLift: lSpeed,
+      speedGrip: gSpeed,
+      lift: {
+        speed: lSpeed,
+        min: parseFloat($('liftMinInput').value) || 50,
+        max: parseFloat($('liftMaxInput').value) || 150,
+        home: parseFloat($('liftHomeInput').value) || 100,
+        invert: $('liftInvertChk').checked,
+        pulseMin: parseInt($('liftPulseMinInput').value, 10) || 544,
+        pulseMax: parseInt($('liftPulseMaxInput').value, 10) || 2400
+      },
+      grip: {
+        speed: gSpeed,
+        min: parseFloat($('gripMinInput').value) || 0,
+        max: parseFloat($('gripMaxInput').value) || 180,
+        home: parseFloat($('gripHomeInput').value) || 90,
+        invert: $('gripInvertChk').checked,
+        pulseMin: parseInt($('gripPulseMinInput').value, 10) || 544,
+        pulseMax: parseInt($('gripPulseMaxInput').value, 10) || 2400
+      }
+    };
+  }
+
+  function sendArmConfig() {
+    var cfg = readArmConfigFromUI();
+    armConfig = cfg;
+    saveArmSettings(cfg);
+    if (wsReady()) {
+      ws.send(JSON.stringify(cfg));
+    }
+  }
+
+  function applyArmConfig(cfg) {
+    if (!cfg) return;
+    if (cfg.lift) {
+      armConfig.lift = cfg.lift;
+      var lSpd = typeof cfg.lift.speed === 'number' ? cfg.lift.speed : (typeof cfg.speedLift === 'number' ? cfg.speedLift : 60);
+      $('liftSpeedSlider').value = lSpd;
+      $('liftSpeedNum').textContent = lSpd;
+      if (document.activeElement !== $('liftMinInput')) $('liftMinInput').value = cfg.lift.min;
+      if (document.activeElement !== $('liftMaxInput')) $('liftMaxInput').value = cfg.lift.max;
+      if (document.activeElement !== $('liftHomeInput')) $('liftHomeInput').value = cfg.lift.home;
+      $('liftInvertChk').checked = !!cfg.lift.invert;
+      if (document.activeElement !== $('liftPulseMinInput')) $('liftPulseMinInput').value = cfg.lift.pulseMin;
+      if (document.activeElement !== $('liftPulseMaxInput')) $('liftPulseMaxInput').value = cfg.lift.pulseMax;
+    }
+    if (cfg.grip) {
+      armConfig.grip = cfg.grip;
+      var gSpd = typeof cfg.grip.speed === 'number' ? cfg.grip.speed : (typeof cfg.speedGrip === 'number' ? cfg.speedGrip : 25);
+      $('gripSpeedSlider').value = gSpd;
+      $('gripSpeedNum').textContent = gSpd;
+      if (document.activeElement !== $('gripMinInput')) $('gripMinInput').value = cfg.grip.min;
+      if (document.activeElement !== $('gripMaxInput')) $('gripMaxInput').value = cfg.grip.max;
+      if (document.activeElement !== $('gripHomeInput')) $('gripHomeInput').value = cfg.grip.home;
+      $('gripInvertChk').checked = !!cfg.grip.invert;
+      if (document.activeElement !== $('gripPulseMinInput')) $('gripPulseMinInput').value = cfg.grip.pulseMin;
+      if (document.activeElement !== $('gripPulseMaxInput')) $('gripPulseMaxInput').value = cfg.grip.pulseMax;
+    }
+    saveArmSettings(armConfig);
+  }
+
+  function renderArmTelemetry(t) {
+    if (!t) return;
+    if (typeof t.liftAngle === 'number') {
+      currentArmAngles.lift = t.liftAngle;
+      $('armLiftAngle').textContent = Math.round(t.liftAngle);
+    }
+    if (typeof t.gripAngle === 'number') {
+      currentArmAngles.grip = t.gripAngle;
+      $('armGripAngle').textContent = Math.round(t.gripAngle);
+    }
+    var badge = $('armStatusBadge');
+    if (t.moving) {
+      badge.textContent = 'MOVING';
+      badge.className = 'pill ok';
+    } else {
+      badge.textContent = 'IDLE';
+      badge.className = 'pill';
+    }
+  }
+
   // ------------------------------ SENSOR DISPLAY -------------------------
   function renderSensors(s) {
     sensorData = s;
@@ -584,15 +832,22 @@
     $('estop').classList.toggle('on', on);
     $('estop').textContent = on ? 'E-STOP ENGAGED - press Space to release' : 'EMERGENCY STOP  [Space]';
     sendIntent();
+    sendArmIntent();
     log(on ? '*** EMERGENCY STOP ENGAGED ***' : 'Emergency stop released.');
   }
   function releaseAll() {
     var any = false, k;
     for (k in keyHeld) if (keyHeld[k]) any = true;
     for (k in touchHeld) any = true;
-    if (any || boostKey) log('Focus changed - motor driving stopped.');
+    for (k in armKeys) if (armKeys[k]) any = true;
+    for (k in armButtons) if (armButtons[k]) any = true;
+    if (any || boostKey || armHomeActive) log('Focus changed - driving and arm stopped.');
     keyHeld = {}; touchHeld = {}; boostKey = false;
+    armKeys = { j: false, l: false, i: false, k: false };
+    armButtons = { j: false, l: false, i: false, k: false };
+    armHomeActive = false;
     sendIntent();
+    sendArmIntent();
   }
 
   // ------------------------------ TELEMETRY ------------------------------
@@ -671,6 +926,7 @@
     var btns = document.querySelectorAll('.pad button');
     for (var i = 0; i < btns.length; i++) btns[i].classList.toggle('pressed', isActive(btns[i].getAttribute('data-dir')));
     sendIntent();
+    sendArmIntent();
   }
 
   // ------------------------------ WEBSOCKET ------------------------------
@@ -691,6 +947,8 @@
       log('Connected to controller.');
       sendIntent();
       sendSensorConfig(); // send sensor config on connect
+      sendArmConfig();    // send arm config on connect
+      sendArmIntent();
     };
     ws.onmessage = function (ev) {
       var m;
@@ -699,12 +957,16 @@
       if (m.type === 'telemetry') renderTelemetry(m);
       else if (m.type === 'sensors') renderSensors(m);
       else if (m.type === 'config') applyConfig(m);
+      else if (m.type === 'arm') renderArmTelemetry(m);
+      else if (m.type === 'armConfig') applyArmConfig(m);
     };
     ws.onclose = function (ev) {
       var busy = ev && ev.code === 4001;
       setStatus(false, busy ? 'Another dashboard is open - close it' : 'Controller offline - is server.js running?');
       renderTelemetry(null);
       renderSensors(null);
+      renderArmTelemetry({ liftAngle: armConfig.lift.home, gripAngle: armConfig.grip.home, moving: false });
+      releaseAll();
       if (!wsLoggedDown) { wsLoggedDown = true; log(busy ? 'Another dashboard already controls the robot.' : 'Controller connection lost. Retrying every 2 s...'); }
       setTimeout(connectWS, 2000);
     };
@@ -767,6 +1029,13 @@
       return;
     }
 
+    // Robotic Arm keys
+    if (e.code === 'KeyJ') { e.preventDefault(); if (!armKeys.j) { armKeys.j = true; sendArmIntent(); } return; }
+    if (e.code === 'KeyL') { e.preventDefault(); if (!armKeys.l) { armKeys.l = true; sendArmIntent(); } return; }
+    if (e.code === 'KeyI') { e.preventDefault(); if (!armKeys.i) { armKeys.i = true; sendArmIntent(); } return; }
+    if (e.code === 'KeyK') { e.preventDefault(); if (!armKeys.k) { armKeys.k = true; sendArmIntent(); } return; }
+    if (e.code === 'KeyH') { e.preventDefault(); if (!e.repeat) triggerHome(); return; }
+
     if (e.repeat) return;
 
     switch (e.code) {
@@ -790,6 +1059,10 @@
     if (e.code === 'KeyB' || e.code === 'ShiftLeft' || e.code === 'ShiftRight') {
       boostKey = false; sendIntent(); return;
     }
+    if (e.code === 'KeyJ') { armKeys.j = false; sendArmIntent(); return; }
+    if (e.code === 'KeyL') { armKeys.l = false; sendArmIntent(); return; }
+    if (e.code === 'KeyI') { armKeys.i = false; sendArmIntent(); return; }
+    if (e.code === 'KeyK') { armKeys.k = false; sendArmIntent(); return; }
     if (e.code === 'Space') e.preventDefault();
   });
 
@@ -899,6 +1172,90 @@
     btn.addEventListener('contextmenu', function (e) { e.preventDefault(); });
   });
 
+  // Robotic Arm button listeners
+  function wireArmBtn(id, key) {
+    var el = $(id);
+    if (!el) return;
+    el.addEventListener('pointerdown', function (e) {
+      e.preventDefault();
+      try { el.setPointerCapture(e.pointerId); } catch (_) {}
+      armButtons[key] = true;
+      sendArmIntent();
+    });
+    var stop = function () {
+      armButtons[key] = false;
+      sendArmIntent();
+    };
+    el.addEventListener('pointerup', stop);
+    el.addEventListener('pointercancel', stop);
+    el.addEventListener('lostpointercapture', stop);
+    el.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+  }
+  wireArmBtn('btnLiftUp', 'i');
+  wireArmBtn('btnLiftDown', 'k');
+  wireArmBtn('btnGripLeft', 'j');
+  wireArmBtn('btnGripRight', 'l');
+  click('btnArmHome', triggerHome);
+
+  // Set MIN / MAX / HOME buttons
+  click('btnLiftSetMin', function () {
+    $('liftMinInput').value = Math.round(currentArmAngles.lift);
+    sendArmConfig();
+    log('Lift MIN set to current angle: ' + Math.round(currentArmAngles.lift) + '°');
+  });
+  click('btnLiftSetMax', function () {
+    $('liftMaxInput').value = Math.round(currentArmAngles.lift);
+    sendArmConfig();
+    log('Lift MAX set to current angle: ' + Math.round(currentArmAngles.lift) + '°');
+  });
+  click('btnLiftSetHome', function () {
+    $('liftHomeInput').value = Math.round(currentArmAngles.lift);
+    sendArmConfig();
+    log('Lift HOME set to current angle: ' + Math.round(currentArmAngles.lift) + '°');
+  });
+
+  click('btnGripSetMin', function () {
+    $('gripMinInput').value = Math.round(currentArmAngles.grip);
+    sendArmConfig();
+    log('Grip MIN set to current angle: ' + Math.round(currentArmAngles.grip) + '°');
+  });
+  click('btnGripSetMax', function () {
+    $('gripMaxInput').value = Math.round(currentArmAngles.grip);
+    sendArmConfig();
+    log('Grip MAX set to current angle: ' + Math.round(currentArmAngles.grip) + '°');
+  });
+  click('btnGripSetHome', function () {
+    $('gripHomeInput').value = Math.round(currentArmAngles.grip);
+    sendArmConfig();
+    log('Grip HOME set to current angle: ' + Math.round(currentArmAngles.grip) + '°');
+  });
+
+  // Dual arm speed sliders
+  $('liftSpeedSlider').addEventListener('input', function (e) {
+    $('liftSpeedNum').textContent = e.target.value;
+    sendArmConfig();
+  });
+  $('liftSpeedSlider').addEventListener('change', function (e) { e.target.blur(); });
+
+  $('gripSpeedSlider').addEventListener('input', function (e) {
+    $('gripSpeedNum').textContent = e.target.value;
+    sendArmConfig();
+  });
+  $('gripSpeedSlider').addEventListener('change', function (e) { e.target.blur(); });
+
+  var armInputIds = [
+    'liftMinInput', 'liftMaxInput', 'liftHomeInput', 'liftPulseMinInput', 'liftPulseMaxInput',
+    'gripMinInput', 'gripMaxInput', 'gripHomeInput', 'gripPulseMinInput', 'gripPulseMaxInput'
+  ];
+  armInputIds.forEach(function (id) {
+    $(id).addEventListener('change', function (e) {
+      sendArmConfig();
+      e.target.blur();
+    });
+  });
+  $('liftInvertChk').addEventListener('change', function (e) { sendArmConfig(); e.target.blur(); });
+  $('gripInvertChk').addEventListener('change', function (e) { sendArmConfig(); e.target.blur(); });
+
   // ------------------------------ INIT -----------------------------------
   $('btnSlow').textContent   = 'Slow [1] ' + SPEED.slow;
   $('btnNormal').textContent = 'Normal [2] ' + SPEED.normal;
@@ -920,6 +1277,10 @@
   $('adviceChk').checked = savedSensors.adviceEnabled !== false;
   $('frontBlockedInput').value = savedSensors.frontBlockedCm || 12;
   $('sideOpenInput').value = savedSensors.sideOpenCm || 25;
+
+  // Restore saved arm configuration
+  var savedArm = loadArmSettings();
+  applyArmConfig(savedArm);
 
   refreshUI();
   renderTelemetry(null);

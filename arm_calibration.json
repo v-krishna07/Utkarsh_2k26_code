@@ -1,0 +1,22 @@
+{
+  "lift": {
+    "speed": 10,
+    "min": 50,
+    "max": 150,
+    "home": 100,
+    "invert": false,
+    "pulseMin": 544,
+    "pulseMax": 2400
+  },
+  "grip": {
+    "speed": 25,
+    "min": 0,
+    "max": 180,
+    "home": 90,
+    "invert": false,
+    "pulseMin": 544,
+    "pulseMax": 2400
+  },
+  "speedLift": 10,
+  "speedGrip": 25
+}

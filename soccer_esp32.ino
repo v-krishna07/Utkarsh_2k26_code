@@ -20,6 +20,7 @@
 #include <WiFi.h>
 #include <WiFiUdp.h>
 #include "sensors.h"     // maze mapper: non-blocking HC-SR04 driver
+#include "arm.h"         // 2-servo robotic arm driver
 
 // ---------------------------- CONFIG ----------------------------------------
 // If the organisers assign you a Wi-Fi name / channel, put them here (and do not change them).
@@ -113,30 +114,57 @@ void setup() {
 }
 
 void loop() {
-  // Drain everything that is waiting and keep only the NEWEST valid frame.
-  bool got = false;
-  uint8_t newest[FRAME_LEN] = {0};
+  // Drain everything that is waiting and keep only the NEWEST valid frame of each kind.
+  bool gotMotor = false;
+  bool gotArm = false;
+  uint8_t newestMotor[FRAME_LEN] = {0};
+  uint8_t newestArm[ARM_FRAME_LEN] = {0};
+  IPAddress lastRemoteIP;
+  uint16_t lastRemotePort = 0;
+  bool gotAny = false;
+
   for (int guard = 0; guard < 32; guard++) {
     int n = udp.parsePacket();
     if (n <= 0) break;
     if (n == FRAME_LEN) {
       int len = udp.read(rxBuf, FRAME_LEN);
-      if (len == FRAME_LEN && validFrame(rxBuf)) {
-        memcpy(newest, rxBuf, FRAME_LEN);
-        got = true;
+      if (len == FRAME_LEN) {
+        if (rxBuf[0] == FRAME_HEADER && validFrame(rxBuf)) {
+          memcpy(newestMotor, rxBuf, FRAME_LEN);
+          gotMotor = true;
+          lastRemoteIP = udp.remoteIP();
+          lastRemotePort = udp.remotePort();
+          gotAny = true;
+        } else if (rxBuf[0] == ARM_FRAME_HEADER && validArmFrame(rxBuf)) {
+          memcpy(newestArm, rxBuf, ARM_FRAME_LEN);
+          gotArm = true;
+          lastRemoteIP = udp.remoteIP();
+          lastRemotePort = udp.remotePort();
+          gotAny = true;
+        }
       }
     }
     // any other size is not our frame and is ignored
   }
 
-  if (got) {
-    applyFrame(newest);
+  // Any valid frame refreshes the sensor reply address
+  if (gotAny) {
+    sensorsSetRemote(lastRemoteIP, lastRemotePort);
+  }
+
+  // Motor frame and failsafe logic (strictly identical)
+  if (gotMotor) {
+    applyFrame(newestMotor);
     lastPacketTime = millis();
     failsafeActive = false;
-    sensorsSetRemote(udp.remoteIP(), udp.remotePort());  // maze: reply to this address
   } else if (!failsafeActive && millis() - lastPacketTime > TIMEOUT_MS) {
     brakeMotors();
     failsafeActive = true;
+  }
+
+  // Arm frame logic (holds position when idle, no failsafe)
+  if (gotArm) {
+    armApplyFrame(newestArm);
   }
 
   sensorsTick(udp);                               // maze: non-blocking sensor scan
