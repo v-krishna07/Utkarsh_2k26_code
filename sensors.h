@@ -60,6 +60,10 @@
 #define SENSOR_PKT_LEN    9
 #define SENSOR_IDLE_MS     2000    // don't send if no motor frame for this long
 
+#ifndef DEBUG_SERIAL
+#define DEBUG_SERIAL 0             // set to 1 to print raw echo us to Serial
+#endif
+
 // ---- State machine ---------------------------------------------------------
 enum SensorPhase {
     S_IDLE,         // waiting for the gap timer
@@ -208,6 +212,9 @@ void sensorsTick(WiFiUDP& udpOut) {
     // After a full round (L, F, R), send the packet
     if (_sns.roundDone) {
         _sns.roundDone = false;
+#if DEBUG_SERIAL
+        Serial.printf("[SENSORS] L:%u us, F:%u us, R:%u us\n", _sns.result[0], _sns.result[1], _sns.result[2]);
+#endif
         _sendSensorPacket(udpOut);
     }
 }

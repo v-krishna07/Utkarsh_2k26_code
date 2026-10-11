@@ -7,14 +7,15 @@
 //  Pipeline:
 //    1. Sensor packets arrive (9-byte binary from ESP32) -> parseSensorPacket
 //    2. Sliding median filter (5 readings per sensor) with close-range memory
-//    3. Dead-reckoned pose from sent PWM (v, ω)
+//    3. Dead-reckoned pose from sent PWM (v, ω) with correct sign for CW heading
 //    4. V_FULL auto-calibration from front wall readings
 //    5. Heading correction from side-wall slope
 //    6. Sideways position correction from (R - L)
-//    7. Occupancy grid update (log-odds, ray-cast, persistent front blocked cell)
+//    7. Occupancy grid update (log-odds, ray-cast, frozen when stopped)
 //    8. Graph / node updates (junctions, dead ends, no duplicates on U-turn)
 //    9. Side opening tracking and junction re-anchoring
 //   10. Turn log with node IDs
+//   11. Step mode (default) & Hold mode motion execution
 // ============================================================================
 
 // ---- CAR & SENSOR CONFIGURATION -------------------------------------------
@@ -32,6 +33,8 @@ const MAZE_CONFIG = Object.freeze({
     MAX_DIST_CM: 100,
     FRONT_BLOCKED_CM: 12,        // blocked flag threshold
     ADVANCE_CM: 15,              // junction center advance (half lane width)
+    STEP_CM: 15,                 // fixed forward step distance in STEP mode
+    FRONT_STOP_CM: 0,            // optional: stop W step this far from wall (0 = off)
     AUTO_ADVANCE_SIM: true,      // simulator auto-advances on A/D at opening
     IS_SIMULATOR: false,
     CLOSE_MEMORY_MS: 500,        // remember close reading for 500 ms on no-echo
@@ -144,6 +147,10 @@ function createMazeState(cfg) {
     const half = Math.floor(cfg.GRID_SIZE_CELLS / 2);
     return {
         cfg: cfg,
+        // Mode: 'step' (default) or 'hold'
+        mode: 'step',
+        currentStep: null,
+        calibChanged: false,
         // Calibration (persisted)
         vFull:     cfg.V_FULL_DEFAULT,
         spinDegS:  cfg.SPIN_DEG_S_DEFAULT,
@@ -169,6 +176,9 @@ function createMazeState(cfg) {
         rawL: 0, rawF: 0, rawR: 0,
         // Close reading memory timestamps (ms)
         lastCloseL: 0, lastCloseF: 0, lastCloseR: 0,
+        // Front sensor echo history (for 2s statistics)
+        frontEchoHistory: [],
+        lastNonZeroRawF: 0,
         // Sensor freshness
         lastSensorAt: 0,
         frontBlocked: false,
@@ -196,8 +206,12 @@ function createMazeState(cfg) {
         prevOpenR: false,
         recentOpenL: null,      // { startX, startY, startDist, heading, active, endDist }
         recentOpenR: null,
-        // Spin detection & turn tracking
-        spinBaselineHeading: null,
+        // Spin detection & turn tracking (Bug 2 fix: never change heading mid-spin)
+        isSpinning: false,
+        spinStartHeading: 0,
+        spinStartAxis: 0,
+        spinAccumAngle: 0,
+        spinStartDist: 0,
         lastTurnTime: 0,
         lastTurnDir: null,
         distAtLastTurn: 0,
@@ -230,9 +244,17 @@ function odomStep(state, dt) {
     const l = state.pwmL, r = state.pwmR;
 
     // Speed (cm/s): v = V_FULL * (l+r) / 510
-    // Omega (deg/s): ω = SPIN_DEG_S * (r-l) / 510
+    // Omega (deg/s): ω = SPIN_DEG_S * (l-r) / 510
+    // BUG 1 FIX: Heading is clockwise from north (0=N, 90=E). Turning right (l>r)
+    // must INCREASE heading, so omega = spinDegS * (l - r) / 510.
     const v = state.vFull * (l + r) / 510;
-    const omega = state.spinDegS * (r - l) / 510;
+    const omega = state.spinDegS * (l - r) / 510;
+
+    // In STEP mode during an active discrete step, the step manager controls the map pose
+    // directly so that the map is always axis-aligned and does not double-count motion.
+    if (state.currentStep !== null) {
+        return { v, omega, dist: Math.abs(v * dt) };
+    }
 
     // Update heading
     state.heading = mod360(state.heading + omega * dt);
@@ -272,6 +294,14 @@ function sensorUpdate(state, pkt, now) {
     state.rawF = pkt.frontUs;
     state.rawR = pkt.rightUs;
     state.lastSensorAt = now;
+
+    // Track front echo history for diagnostics (last 2 seconds)
+    state.frontEchoHistory.push({ time: now, hasEcho: pkt.frontUs > 0, rawF: pkt.frontUs });
+    if (pkt.frontUs > 0) state.lastNonZeroRawF = pkt.frontUs;
+    const cutoff = now - 2000;
+    while (state.frontEchoHistory.length > 0 && state.frontEchoHistory[0].time < cutoff) {
+        state.frontEchoHistory.shift();
+    }
 
     // Convert µs -> cm (clamps < 2.5 cm to 2.5 cm)
     const rawLcm = usToCm(pkt.leftUs, cfg);
@@ -354,6 +384,7 @@ function vFullAutoTune(state, odom) {
 
     state.vFull = clamp(state.vFull * (1 + cfg.VFULL_LEARN_RATE * (ratio - 1)),
                         cfg.V_FULL_MIN, cfg.V_FULL_MAX);
+    state.calibChanged = true;
     resetVfRef(state);
 }
 
@@ -477,10 +508,16 @@ function gridIndex(state, cx, cy) {
 
 function updateGrid(state, odom) {
     const cfg = state.cfg;
+
+    // Rule: The map must never draw a wall or move the car on the map if the robot was not commanded to move.
+    const commanded = (Math.abs(state.pwmL) >= cfg.STOPPED_PWM_THRESHOLD ||
+                       Math.abs(state.pwmR) >= cfg.STOPPED_PWM_THRESHOLD ||
+                       state.currentStep !== null);
+    if (!commanded) return;
+
     const headRad = state.heading * DEG;
 
-    // Rule 1c: The grid must get an occupied cell at that distance on every update,
-    // so the wall is drawn and does not fade (even when stopped).
+    // When front is blocked and commanded, stamp the occupied cell ahead of the front sensor
     if (state.frontBlocked && state.distF !== null) {
         const fsx = state.x + cfg.SENSOR_FRONT.x * Math.cos(headRad) + cfg.SENSOR_FRONT.y * Math.sin(headRad);
         const fsy = state.y - cfg.SENSOR_FRONT.x * Math.sin(headRad) + cfg.SENSOR_FRONT.y * Math.cos(headRad);
@@ -493,10 +530,6 @@ function updateGrid(state, odom) {
             state.dirtyGrid.set(idx, state.grid[idx]);
         }
     }
-
-    // Freeze general map raycast while stopped (so noise doesn't build up)
-    if (Math.abs(state.pwmL) < cfg.STOPPED_PWM_THRESHOLD &&
-        Math.abs(state.pwmR) < cfg.STOPPED_PWM_THRESHOLD) return;
 
     const spinning = odom && Math.abs(odom.omega) > cfg.SPIN_OMEGA_THRESHOLD;
     const weight = spinning ? cfg.LOG_ODD_SPIN_SCALE : 1.0;
@@ -654,8 +687,8 @@ function detectOpenings(state, odom) {
     const cfg = state.cfg;
     if (Math.abs(odom.v) < 1 || Math.abs(odom.omega) > cfg.SPIN_OMEGA_THRESHOLD) return;
 
-    const openL = state.distL === null || state.distL > cfg.OPENING_THRESHOLD_CM;
-    const openR = state.distR === null || state.distR > cfg.OPENING_THRESHOLD_CM;
+    const openL = state.distL !== null && state.distL > cfg.OPENING_THRESHOLD_CM;
+    const openR = state.distR !== null && state.distR > cfg.OPENING_THRESHOLD_CM;
 
     // Rising edges: start tracking opening travel
     if (openL && !state.prevOpenL) {
@@ -759,35 +792,36 @@ function addTurnLog(state, text) {
     state.turnLog.push({ time, text });
 }
 
-// ---- JUNCTION RE-ANCHORING & TURNS (PART 2) ----------------------------------
-function reanchorToJunction(state, dir) {
+// ---- JUNCTION RE-ANCHORING & TURNS ------------------------------------------
+function reanchorToJunction(state, dir, startAxis, isStepMode = false) {
     const cfg = state.cfg;
-    const op = dir === 'left' ? state.recentOpenL : state.recentOpenR;
+    const baseAxis = (startAxis !== undefined) ? startAxis : snapHeading(state.heading).axis;
+    const newHeading = mod360(baseAxis + (dir === 'left' ? -90 : 90));
+
+    // Rule: opening beside car OR ended within last 25 cm of travel (in continuous/hold mode only)
     let juncX = state.x;
     let juncY = state.y;
-    const oldHeading = (op && op.heading !== undefined) ? op.heading : state.heading;
 
-    // Rule: opening beside car OR ended within last 25 cm of travel
-    let reanchored = false;
-    if (op) {
-        const isBeside = op.active;
-        const endedWithin25 = !op.active && op.endDist !== null && (state.totalDist - op.endDist <= 25);
-        if (isBeside || endedWithin25) {
-            const oldHeadRad = oldHeading * DEG;
-            juncX = op.startX + cfg.ADVANCE_CM * Math.sin(oldHeadRad);
-            juncY = op.startY + cfg.ADVANCE_CM * Math.cos(oldHeadRad);
-            state.x = juncX;
-            state.y = juncY;
-            reanchored = true;
+    if (!isStepMode) {
+        const op = dir === 'left' ? state.recentOpenL : state.recentOpenR;
+        if (op) {
+            const isBeside = op.active;
+            const endedWithin25 = !op.active && op.endDist !== null && (state.totalDist - op.endDist <= 25);
+            if (isBeside || endedWithin25) {
+                const oldHeadRad = baseAxis * DEG;
+                juncX = op.startX + cfg.ADVANCE_CM * Math.sin(oldHeadRad);
+                juncY = op.startY + cfg.ADVANCE_CM * Math.cos(oldHeadRad);
+                state.x = juncX;
+                state.y = juncY;
+            }
         }
     }
 
-    const newHeading = mod360(oldHeading + (dir === 'left' ? -90 : 90));
     state.heading = newHeading;
     state.prevSnapName = snapHeading(newHeading).name;
     state.laneCentreSet = false;
 
-    // Place junction node at the junction centre
+    // Place or merge junction node at the junction centre
     let juncNode = null;
     for (const n of state.nodes) {
         if (Math.hypot(n.x - juncX, n.y - juncY) < cfg.NODE_MERGE_CM) {
@@ -831,10 +865,12 @@ function reanchorToJunction(state, dir) {
     return juncNode;
 }
 
-function handleUturn(state) {
+function handleUturn(state, startAxis) {
     const cfg = state.cfg;
-    state.heading = mod360(state.heading + 180);
-    state.prevSnapName = snapHeading(state.heading).name;
+    const baseAxis = (startAxis !== undefined) ? startAxis : snapHeading(state.heading).axis;
+    const newHeading = mod360(baseAxis + 180);
+    state.heading = newHeading;
+    state.prevSnapName = snapHeading(newHeading).name;
     state.laneCentreSet = false;
 
     // Do NOT create duplicate nodes: continue along existing nodes and edges
@@ -864,53 +900,50 @@ function handleUturn(state) {
     return { heading: state.heading, nodeId };
 }
 
-function detectTurns(state, odom) {
+// BUG 2 FIX: Rewrite detectTurns to never change heading mid-spin.
+// Record heading when a spin starts; when it stops, quantise total rotation to
+// nearest multiple of 90 (>= 45 degrees counts as a turn): 1 = left/right turn, 2 = U-TURN.
+function detectTurns(state, odom, dt) {
     const cfg = state.cfg;
-    const now = state.lastTickNow !== undefined ? state.lastTickNow : Date.now();
-    const snap = snapHeading(state.heading);
-
-    if (state.prevSnapName === null) {
-        state.prevSnapName = snap.name;
-        state.spinBaselineHeading = state.heading;
-        return;
-    }
-
+    const timeDelta = (typeof dt === 'number' && dt > 0) ? dt : 0.02;
     const spinning = odom && Math.abs(odom.omega) > cfg.SPIN_OMEGA_THRESHOLD;
+
     if (spinning) {
-        if (state.spinBaselineHeading === null) state.spinBaselineHeading = state.heading;
-        const spinAngle = angleDiff(state.heading, state.spinBaselineHeading);
-
-        // U-turn detection: spin of ~180°
-        if (Math.abs(spinAngle) >= 150 && Math.abs(spinAngle) <= 210) {
-            handleUturn(state);
-            state.spinBaselineHeading = state.heading;
-            state.prevSnapName = snap.name;
-            return;
+        if (!state.isSpinning) {
+            state.isSpinning = true;
+            state.spinStartHeading = state.heading;
+            state.spinStartAxis = snapHeading(state.heading).axis;
+            state.spinAccumAngle = 0;
+            state.spinStartDist = state.totalDist;
         }
+        // Accumulate rotation (positive = CW / right, negative = CCW / left)
+        state.spinAccumAngle += odom.omega * timeDelta;
+    } else if (state.isSpinning) {
+        // Spin finished
+        state.isSpinning = false;
+        const totalRot = state.spinAccumAngle;
+        const absRot = Math.abs(totalRot);
 
-        // A/D spin of at least 45°
-        if (Math.abs(spinAngle) >= 45) {
-            const dir = spinAngle > 0 ? 'right' : 'left';
-            // Check: two same-direction turns within 2 seconds with no travel between them
-            const isDoubleTurn = (state.lastTurnDir === dir) &&
-                                 (now - state.lastTurnTime < 2000) &&
-                                 (state.totalDist - state.distAtLastTurn < 5);
-
-            if (isDoubleTurn) {
-                handleUturn(state);
-            } else {
-                reanchorToJunction(state, dir);
+        if (absRot >= 45) {
+            const k = Math.round(absRot / 90);
+            if (k === 1) {
+                // 1 = 90-degree turn
+                const dir = totalRot > 0 ? 'right' : 'left';
+                reanchorToJunction(state, dir, state.spinStartAxis, false);
+            } else if (k === 2) {
+                // 2 = U-turn (180 degrees)
+                handleUturn(state, state.spinStartAxis);
+            } else if (k >= 3) {
+                const dir = totalRot > 0 ? 'left' : 'right';
+                reanchorToJunction(state, dir, state.spinStartAxis, false);
             }
-
-            state.lastTurnDir = dir;
-            state.lastTurnTime = now;
-            state.distAtLastTurn = state.totalDist;
-            state.spinBaselineHeading = state.heading;
-            state.prevSnapName = snap.name;
+        } else {
+            // Did not reach 45 degrees: not a turn, restore axis-aligned heading
+            state.heading = state.spinStartAxis;
         }
+        state.prevSnapName = snapHeading(state.heading).name;
     } else {
-        state.spinBaselineHeading = state.heading;
-        state.prevSnapName = snap.name;
+        state.prevSnapName = snapHeading(state.heading).name;
     }
 
     // Detect reversing
@@ -921,7 +954,210 @@ function detectTurns(state, odom) {
     state.wasReversing = reversing;
 }
 
-// ---- SPIN CALIBRATION -------------------------------------------------------
+// ---- STEP MODE MOTION EXECUTION --------------------------------------------
+function startStep(state, action, speed, now) {
+    if (state.currentStep !== null) return false; // Ignore while motion is running
+
+    speed = clamp(finite(speed) ? speed : 140, 40, 255);
+    const cfg = state.cfg;
+
+    let type = action;
+    if (action === 'W') type = 'forward';
+    else if (action === 'A') type = 'left';
+    else if (action === 'D') type = 'right';
+    else if (action === 'S') type = 'uturn';
+
+    if (type === 'forward') {
+        let stepDist = cfg.STEP_CM;
+        if (cfg.FRONT_STOP_CM > 0 && state.distF !== null) {
+            const available = state.distF - cfg.FRONT_STOP_CM;
+            stepDist = Math.max(0, Math.min(stepDist, available));
+        }
+        if (stepDist <= 0) return false;
+
+        const v = state.vFull * (speed / 255);
+        const duration = stepDist / v;
+
+        state.currentStep = {
+            type: 'forward',
+            label: 'FORWARD',
+            speed: speed,
+            stepDist: stepDist,
+            duration: duration,
+            elapsed: 0,
+            pwmL: speed,
+            pwmR: speed,
+            startAxis: snapHeading(state.heading).axis,
+            fBefore: state.distF,
+        };
+        state.pwmL = speed;
+        state.pwmR = speed;
+        return true;
+    }
+
+    if (type === 'left') {
+        const angle = 90;
+        const spinRate = state.spinDegS * (2 * speed / 510);
+        const duration = angle / spinRate;
+
+        state.currentStep = {
+            type: 'left',
+            label: 'SPIN LEFT 90°',
+            speed: speed,
+            angle: angle,
+            duration: duration,
+            elapsed: 0,
+            pwmL: -speed,
+            pwmR: speed,
+            startAxis: snapHeading(state.heading).axis,
+        };
+        state.pwmL = -speed;
+        state.pwmR = speed;
+        return true;
+    }
+
+    if (type === 'right') {
+        const angle = 90;
+        const spinRate = state.spinDegS * (2 * speed / 510);
+        const duration = angle / spinRate;
+
+        state.currentStep = {
+            type: 'right',
+            label: 'SPIN RIGHT 90°',
+            speed: speed,
+            angle: angle,
+            duration: duration,
+            elapsed: 0,
+            pwmL: speed,
+            pwmR: -speed,
+            startAxis: snapHeading(state.heading).axis,
+        };
+        state.pwmL = speed;
+        state.pwmR = -speed;
+        return true;
+    }
+
+    if (type === 'uturn') {
+        const angle = 180;
+        const spinRate = state.spinDegS * (2 * speed / 510);
+        const duration = angle / spinRate;
+
+        state.currentStep = {
+            type: 'uturn',
+            label: 'U-TURN 180°',
+            speed: speed,
+            angle: angle,
+            duration: duration,
+            elapsed: 0,
+            pwmL: speed,
+            pwmR: -speed,
+            startAxis: snapHeading(state.heading).axis,
+        };
+        state.pwmL = speed;
+        state.pwmR = -speed;
+        return true;
+    }
+
+    return false;
+}
+
+function updateStep(state, dt, now) {
+    if (!state.currentStep) return null;
+    const step = state.currentStep;
+    step.elapsed += dt;
+
+    if (step.elapsed < step.duration) {
+        state.pwmL = step.pwmL;
+        state.pwmR = step.pwmR;
+        return { done: false, fraction: step.elapsed / step.duration };
+    }
+
+    // Step motion complete!
+    state.pwmL = 0;
+    state.pwmR = 0;
+
+    if (step.type === 'forward') {
+        const headRad = step.startAxis * DEG;
+        state.x = Math.round((state.x + step.stepDist * Math.sin(headRad)) * 100) / 100;
+        state.y = Math.round((state.y + step.stepDist * Math.cos(headRad)) * 100) / 100;
+        state.heading = step.startAxis; // keep exactly axis-aligned
+        state.prevSnapName = snapHeading(state.heading).name;
+        state.totalDist += step.stepDist;
+        state.distSinceNode += step.stepDist;
+        state.trail.push({ x: state.x, y: state.y });
+
+        graphUpdate(state, { v: 0, omega: 0, dist: step.stepDist });
+        detectOpenings(state, { v: 40, omega: 0, dist: step.stepDist });
+
+        // Self-calibration without a ruler: after each W step, if front reading was
+        // valid (8..95 cm) before and after, ratio = (F_before - F_after)/STEP_CM,
+        // nudge vFull by small fraction (clamp ratio 0.4..2.5, ignore jumps).
+        const fAfter = state.distF;
+        if (step.fBefore !== null && fAfter !== null &&
+            step.fBefore >= 8 && step.fBefore <= 95 &&
+            fAfter >= 8 && fAfter <= 95) {
+            const deltaF = step.fBefore - fAfter;
+            const ratio = deltaF / step.stepDist;
+            if (ratio >= 0.4 && ratio <= 2.5) {
+                const learnRate = 0.08;
+                state.vFull = clamp(state.vFull * (1 + learnRate * (ratio - 1)), state.cfg.V_FULL_MIN, state.cfg.V_FULL_MAX);
+                state.calibChanged = true;
+            }
+        }
+    } else if (step.type === 'left') {
+        reanchorToJunction(state, 'left', step.startAxis, true);
+    } else if (step.type === 'right') {
+        reanchorToJunction(state, 'right', step.startAxis, true);
+    } else if (step.type === 'uturn') {
+        handleUturn(state, step.startAxis);
+    }
+
+    state.currentStep = null;
+    return { done: true, type: step.type };
+}
+
+function abortStep(state) {
+    if (!state.currentStep) return null;
+    const step = state.currentStep;
+    const fraction = Math.min(1, Math.max(0, step.elapsed / step.duration));
+    state.pwmL = 0;
+    state.pwmR = 0;
+
+    if (step.type === 'forward') {
+        const completedDist = Math.round((step.stepDist * fraction) * 100) / 100;
+        const headRad = step.startAxis * DEG;
+        state.x = Math.round((state.x + completedDist * Math.sin(headRad)) * 100) / 100;
+        state.y = Math.round((state.y + completedDist * Math.cos(headRad)) * 100) / 100;
+        state.totalDist += completedDist;
+        state.distSinceNode += completedDist;
+        state.trail.push({ x: state.x, y: state.y });
+        graphUpdate(state, { v: 0, omega: 0, dist: completedDist });
+    } else if (step.type === 'left') {
+        state.heading = mod360(step.startAxis - 90 * fraction);
+    } else if (step.type === 'right') {
+        state.heading = mod360(step.startAxis + 90 * fraction);
+    } else if (step.type === 'uturn') {
+        state.heading = mod360(step.startAxis + 180 * fraction);
+    }
+    state.currentStep = null;
+    return { aborted: true, fraction };
+}
+
+function toggleMode(state) {
+    state.mode = state.mode === 'step' ? 'hold' : 'step';
+    if (state.currentStep) abortStep(state);
+    addTurnLog(state, 'MODE: ' + state.mode.toUpperCase());
+    return state.mode;
+}
+
+function nudgeTurnCalib(state, factor) {
+    state.spinDegS = clamp(state.spinDegS * factor, 30, 1000);
+    state.calibChanged = true;
+    addTurnLog(state, 'TURN CALIB: ' + state.spinDegS.toFixed(1) + ' deg/s');
+    return state.spinDegS;
+}
+
+// ---- SPIN CALIBRATION (FULL 360) -------------------------------------------
 function toggleSpinCalib(state) {
     if (!state.spinCalibActive) {
         state.spinCalibActive = true;
@@ -934,6 +1170,7 @@ function toggleSpinCalib(state) {
         if (state.spinCalibAccum > 0.01) {
             state.spinDegS = 360 / state.spinCalibAccum;
             state.spinDegS = clamp(state.spinDegS, 30, 1000);
+            state.calibChanged = true;
             addTurnLog(state, 'SPIN CALIB: ' + state.spinDegS.toFixed(1) + ' deg/s');
             return { started: false, spinDegS: state.spinDegS };
         }
@@ -947,7 +1184,17 @@ function mazeTick(state, dt, now) {
     state.lastTickNow = now;
     if (!state.mapActive) return { odom: { v: 0, omega: 0, dist: 0 } };
 
+    // Update active step motion if running
+    if (state.currentStep !== null) {
+        updateStep(state, dt, now);
+    }
+
+    // Odometry
     const odom = odomStep(state, dt) || { v: 0, omega: 0, dist: 0 };
+
+    // Turn detection and graph updating always run with odometry
+    detectTurns(state, odom, dt);
+    graphUpdate(state, odom);
 
     const sensorFresh = (now - state.lastSensorAt) < state.cfg.STALE_MS;
     if (sensorFresh) {
@@ -955,9 +1202,7 @@ function mazeTick(state, dt, now) {
         headingCorrection(state, odom);
         laneCorrection(state, odom);
         updateGrid(state, odom);
-        graphUpdate(state, odom);
         detectOpenings(state, odom);
-        detectTurns(state, odom);
     }
 
     return { odom };
@@ -969,6 +1214,7 @@ function resetMaze(state) {
     const fresh = createMazeState(cfg);
     fresh.vFull = state.vFull;
     fresh.spinDegS = state.spinDegS;
+    fresh.mode = state.mode;
     fresh.timerStartAt = state.timerStartAt;
     fresh.timerRunning = state.timerRunning;
     fresh.sessionStartAt = state.sessionStartAt;
@@ -1006,6 +1252,12 @@ function getTelemetry(state, now) {
     const snap = snapHeading(state.heading);
     const stale = (now - state.lastSensorAt) > state.cfg.STALE_MS;
     const sensorAge = now - state.lastSensorAt;
+
+    // Echo statistics over last 2 seconds
+    const totalEchoes = state.frontEchoHistory.length;
+    const nonZeroEchoes = state.frontEchoHistory.filter(e => e.hasEcho).length;
+    const echoPct = totalEchoes > 0 ? Math.round((nonZeroEchoes / totalEchoes) * 100) : 0;
+
     return {
         x: Math.round(state.x * 10) / 10,
         y: Math.round(state.y * 10) / 10,
@@ -1022,6 +1274,9 @@ function getTelemetry(state, now) {
         pwmR: state.pwmR,
         vFull: Math.round(state.vFull * 10) / 10,
         spinDegS: Math.round(state.spinDegS * 10) / 10,
+        mode: state.mode,
+        currentStep: state.currentStep ? state.currentStep.label : 'none',
+        frontEchoStat: { pct: echoPct, lastRawF: state.lastNonZeroRawF || 0 },
         sensorStale: stale,
         sensorAge: sensorAge,
         mapActive: state.mapActive,
@@ -1137,6 +1392,11 @@ module.exports = {
     manualTurn,
     reanchorToJunction,
     handleUturn,
+    startStep,
+    updateStep,
+    abortStep,
+    toggleMode,
+    nudgeTurnCalib,
     getGridSnapshot,
     getDirtyGridCells,
     getTelemetry,

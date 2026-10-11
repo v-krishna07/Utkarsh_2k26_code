@@ -115,6 +115,7 @@
     color: var(--text);
     line-height: 1.2;
   }
+  /* BUG 3 FIX: Red border and text only applies when front is blocked */
   .sensor-box.blocked {
     border-color: var(--danger);
   }
@@ -251,7 +252,7 @@
     top: 73px;
     right: 0;
     bottom: 0;
-    width: 320px;
+    width: 340px;
     background: var(--card);
     border-left: 1px solid var(--border);
     transform: translateX(100%);
@@ -311,7 +312,7 @@
     border: 1px solid var(--border);
     border-radius: 6px;
     padding: 8px;
-    height: 160px;
+    height: 140px;
     overflow-y: auto;
     font-family: Consolas, monospace;
     font-size: 0.75rem;
@@ -327,7 +328,7 @@
 
 <!-- TOP BAR -->
 <div id="topBar">
-  <!-- LEFT: FACING & TIMER -->
+  <!-- LEFT: FACING, TIMER & MODE TOGGLE -->
   <div class="nav-group">
     <div class="info-pill">
       <div class="label">Heading</div>
@@ -337,6 +338,7 @@
       <div class="label">Timer [T]</div>
       <div id="clockDisplay" class="val timer-val">03:00</div>
     </div>
+    <button id="btnMode" class="btn" title="Toggle STEP / HOLD mode (Press M)">MODE: STEP [M]</button>
   </div>
 
   <!-- CENTER: THE THREE BIG NUMBERS IN ONE ROW -->
@@ -387,17 +389,23 @@
 <!-- COLLAPSIBLE SETTINGS PANEL (DRAWER) -->
 <div id="settingsDrawer">
   <div class="drawer-header">
-    <h3>Settings & Actions</h3>
+    <h3>Settings & Diagnostics</h3>
     <button id="btnCloseDrawer" class="btn">✕</button>
+  </div>
+
+  <!-- DIAGNOSTICS STATUS LINE -->
+  <div class="drawer-section">
+    <label>Diagnostics Status</label>
+    <div id="diagStatus" style="font-family:Consolas,monospace; font-size:0.75rem; color:var(--wall); line-height:1.45; padding:8px; background:var(--bg); border:1px solid var(--border); border-radius:6px; white-space:pre-wrap;">Connecting...</div>
   </div>
 
   <div class="drawer-section">
     <label>Speed: <span id="speedVal">140</span> [Q/E]</label>
-    <input type="range" id="speedSlider" min="30" max="255" value="140" style="accent-color:var(--path)">
+    <input type="range" id="speedSlider" min="40" max="255" value="140" style="accent-color:var(--path)">
   </div>
 
   <div class="drawer-section">
-    <label>Actions</label>
+    <label>Manual Actions</label>
     <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px;">
       <button id="btnResetMap" class="btn">Reset Map [R]</button>
       <button id="btnSpinCalib" class="btn">Spin Calib [K]</button>
@@ -406,6 +414,10 @@
       <button id="btnTurnL" class="btn">↰ Left [J]</button>
       <button id="btnTurnU" class="btn">⮌ U-Turn [U]</button>
       <button id="btnTurnR" class="btn">↱ Right [L]</button>
+    </div>
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-top:4px;">
+      <button id="btnNudgeMinus" class="btn" title="Turn calib -2% (Key [)">Turn -2% [ [ ]</button>
+      <button id="btnNudgePlus" class="btn" title="Turn calib +2% (Key ])">Turn +2% [ ] ]</button>
     </div>
   </div>
 
@@ -434,6 +446,7 @@
   var boostKey = false;
   var spaceHeld = false;
   var keyHeld = {};
+  var currentMode = 'step'; // 'step' (default) or 'hold'
   var lastTelem = null;
   var gridCells = [];
   var gridMap = {};
@@ -441,6 +454,11 @@
   var lastCar = [];
   var timer = { state: 'idle', startAt: 0 };
   var hasReceivedPacket = false;
+
+  // Smooth car animation state
+  var renderCarX = null;
+  var renderCarY = null;
+  var renderCarHeading = null;
 
   // ---- INTENT & DRIVING ----
   function readInput() {
@@ -469,6 +487,21 @@
     }));
   }
 
+  function sendStepMotion(motion) {
+    if (!wsReady()) return;
+    ws.send(JSON.stringify({ type: 'stepMotion', motion: motion, speed: speed }));
+  }
+
+  function sendToggleMode() {
+    if (!wsReady()) return;
+    ws.send(JSON.stringify({ type: 'toggleMode' }));
+  }
+
+  function sendNudgeTurn(factor) {
+    if (!wsReady()) return;
+    ws.send(JSON.stringify({ type: 'nudgeTurnCalib', factor: factor }));
+  }
+
   function sendTurn(action) {
     if (!wsReady()) return;
     ws.send(JSON.stringify({ type: 'manualTurn', action: action }));
@@ -484,7 +517,7 @@
     }
 
     ws.onopen = function() {
-      sendIntent();
+      if (currentMode === 'hold') sendIntent();
     };
 
     ws.onmessage = function(ev) {
@@ -535,10 +568,15 @@
     var t = lastTelem;
     if (!t) return;
 
+    if (t.mode) {
+      currentMode = t.mode;
+      $('btnMode').textContent = 'MODE: ' + t.mode.toUpperCase() + ' [M]';
+    }
+
     // Heading in simple format: "FACING NORTH"
     $('headingText').textContent = 'FACING ' + t.headingName;
 
-    // The 3 Big Numbers
+    // The 3 Big Numbers (BUG 3 FIX: red blocked applies ONLY to FRONT box)
     renderSensorBox('SL', t.distL, false);
     renderSensorBox('SF', t.distF, t.frontBlocked || (t.distF !== null && t.distF < 12));
     renderSensorBox('SR', t.distR, false);
@@ -553,6 +591,15 @@
       rawEl.className = 'raw-row';
       rawTextEl.textContent = 'raw: ' + t.rawL + ' µs | ' + t.rawF + ' µs | ' + t.rawR + ' µs';
     }
+
+    // Diagnostics status line
+    var stat = t.frontEchoStat || { pct: 0, lastRawF: 0 };
+    $('diagStatus').textContent =
+      'PWM: [' + t.pwmL + ', ' + t.pwmR + '] | Pos: (' + t.x.toFixed(1) + ', ' + t.y.toFixed(1) + ') | ' +
+      'Heading: ' + t.heading.toFixed(1) + '°\n' +
+      'vFull: ' + t.vFull + ' cm/s | spinDegS: ' + t.spinDegS + '°/s\n' +
+      'Mode: ' + (t.mode || 'step').toUpperCase() + ' | Step: ' + (t.currentStep || 'IDLE') + '\n' +
+      'Front Echoes (2s): ' + stat.pct + '% (last: ' + stat.lastRawF + ' µs)';
 
     // Dead end banner
     $('deadEndBanner').style.display = (t.distF !== null && t.distF < 16 && t.distL !== null && t.distL < 40 && t.distR !== null && t.distR < 40) ? 'block' : 'none';
@@ -580,23 +627,23 @@
     $('btnSpinCalib').classList.toggle('active', !!t.spinCalibActive);
   }
 
+  // BUG 3 FIX: Only FRONT box can get red styling and BLOCKED tag
   function renderSensorBox(id, dist, isBlocked) {
     var box = $('box' + id);
     var numEl = $('val' + id);
     var tagEl = $('tag' + id);
 
     if (dist === null || dist === undefined) {
-      // No echo / open space: show ">100" (never leave it blank!)
       box.className = 'sensor-box';
       numEl.textContent = '>100';
       tagEl.textContent = '';
-    } else if (dist < 12 || isBlocked) {
-      // Under 12 cm: show the number in red with the word BLOCKED under it
+    } else if (id === 'SF' && (dist < 12 || isBlocked)) {
+      // Front box only: show the number in red with the word BLOCKED under it
       box.className = 'sensor-box blocked';
       numEl.textContent = dist.toFixed(1) + ' cm';
       tagEl.textContent = 'BLOCKED';
     } else {
-      // Normal reading
+      // Left and right boxes just show their number without red or BLOCKED
       box.className = 'sensor-box';
       numEl.textContent = dist.toFixed(1) + ' cm';
       tagEl.textContent = '';
@@ -645,11 +692,6 @@
   }
 
   // ---- MAP RENDERING (AT MOST 4 COLORS) ----
-  // Colors:
-  // 1. Dark background: #090d16
-  // 2. Wall colour: #cbd5e1
-  // 3. Path colour: #38bdf8
-  // 4. Red for danger: #ef4444
   var dpr = window.devicePixelRatio || 1;
 
   function resizeCanvas() {
@@ -669,6 +711,18 @@
 
     var t = lastTelem;
     if (!t) return;
+
+    // Smooth car animation interpolation
+    if (renderCarX === null) {
+      renderCarX = t.x;
+      renderCarY = t.y;
+      renderCarHeading = t.heading;
+    } else {
+      renderCarX += (t.x - renderCarX) * 0.35;
+      renderCarY += (t.y - renderCarY) * 0.35;
+      var dHeading = ((t.heading - renderCarHeading + 540) % 360) - 180;
+      renderCarHeading = (renderCarHeading + dHeading * 0.35 + 360) % 360;
+    }
 
     var showDetails = $('checkDetails').checked;
 
@@ -726,7 +780,6 @@
 
     // 3. DETAILS: GRAPH NODES, EDGES, SENSOR BEAMS (Hidden by default)
     if (showDetails) {
-      // Graph edges
       if (t.edges && t.nodes) {
         var nodeMap = {};
         for (var n = 0; n < t.nodes.length; n++) nodeMap[t.nodes[n].id] = t.nodes[n];
@@ -744,7 +797,6 @@
         }
       }
 
-      // Sensor Beams
       if (lastBeams) {
         ctx.lineWidth = 1 * dpr;
         for (var b = 0; b < lastBeams.length; b++) {
@@ -763,13 +815,11 @@
       for (var ni = 0; ni < t.nodes.length; ni++) {
         var node = t.nodes[ni];
         if (node.isJunction) {
-          // Junction marker
           ctx.fillStyle = '#38bdf8';
           ctx.beginPath();
           ctx.arc(wx(node.x), wy(node.y), 4 * dpr, 0, Math.PI * 2);
           ctx.fill();
 
-          // Direction arrow at junction node if available
           if (node.turnArrowHeading !== undefined) {
             var thRad = node.turnArrowHeading * Math.PI / 180;
             var arrowLen = 12 * dpr;
@@ -808,34 +858,51 @@
       }
     }
 
-    // 5. ROBOT CAR WITH FRONT ARROW
-    if (lastCar.length === 4) {
-      ctx.beginPath();
-      ctx.moveTo(wx(lastCar[0].x), wy(lastCar[0].y));
-      for (var c = 1; c < 4; c++) ctx.lineTo(wx(lastCar[c].x), wy(lastCar[c].y));
-      ctx.closePath();
-      ctx.fillStyle = '#111726';
-      ctx.fill();
-      ctx.strokeStyle = '#38bdf8';
-      ctx.lineWidth = 2 * dpr;
-      ctx.stroke();
-    }
+    // 5. ROBOT CAR WITH FRONT ARROW (Smoothly Animated)
+    var animX = renderCarX !== null ? renderCarX : t.x;
+    var animY = renderCarY !== null ? renderCarY : t.y;
+    var animHeading = renderCarHeading !== null ? renderCarHeading : t.heading;
+    var headRad = animHeading * Math.PI / 180;
+
+    var hw = 7.0; // half width (14 cm)
+    var hl = 8.0; // half length (16 cm)
+    var corners = [
+      { cx: -hw, cy:  hl },
+      { cx:  hw, cy:  hl },
+      { cx:  hw, cy: -hl },
+      { cx: -hw, cy: -hl }
+    ];
+    var worldCorners = corners.map(function(c) {
+      return {
+        x: animX + c.cx * Math.cos(headRad) + c.cy * Math.sin(headRad),
+        y: animY - c.cx * Math.sin(headRad) + c.cy * Math.cos(headRad)
+      };
+    });
+
+    ctx.beginPath();
+    ctx.moveTo(wx(worldCorners[0].x), wy(worldCorners[0].y));
+    for (var c = 1; c < 4; c++) ctx.lineTo(wx(worldCorners[c].x), wy(worldCorners[c].y));
+    ctx.closePath();
+    ctx.fillStyle = '#111726';
+    ctx.fill();
+    ctx.strokeStyle = '#38bdf8';
+    ctx.lineWidth = 2 * dpr;
+    ctx.stroke();
 
     // Heading Arrow on car (RED)
-    var headRad = t.heading * Math.PI / 180;
     var aLen = Math.max(16 * dpr, 14 * scale);
-    var ax = wx(t.x) + Math.sin(headRad) * aLen;
-    var ay = wy(t.y) - Math.cos(headRad) * aLen;
+    var ax = wx(animX) + Math.sin(headRad) * aLen;
+    var ay = wy(animY) - Math.cos(headRad) * aLen;
 
     ctx.strokeStyle = '#ef4444';
     ctx.lineWidth = 3 * dpr;
     ctx.beginPath();
-    ctx.moveTo(wx(t.x), wy(t.y));
+    ctx.moveTo(wx(animX), wy(animY));
     ctx.lineTo(ax, ay);
     ctx.stroke();
 
     var aSize = 6 * dpr;
-    var aAngle = Math.atan2(ay - wy(t.y), ax - wx(t.x));
+    var aAngle = Math.atan2(ay - wy(animY), ax - wx(animX));
     ctx.beginPath();
     ctx.moveTo(ax, ay);
     ctx.lineTo(ax - aSize * Math.cos(aAngle - 0.5), ay - aSize * Math.sin(aAngle - 0.5));
@@ -847,12 +914,11 @@
     // 6. RED WALL SEGMENT AHEAD OF CAR IF FRONT BLOCKED
     if ((t.frontBlocked || (t.distF !== null && t.distF < 12)) && t.distF !== null) {
       var dBlocked = Math.max(2.5, t.distF);
-      var fsx = t.x + 8.0 * Math.sin(headRad);
-      var fsy = t.y + 8.0 * Math.cos(headRad);
+      var fsx = animX + 8.0 * Math.sin(headRad);
+      var fsy = animY + 8.0 * Math.cos(headRad);
       var wallCenterWorldX = fsx + Math.sin(headRad) * dBlocked;
       var wallCenterWorldY = fsy + Math.cos(headRad) * dBlocked;
 
-      // Draw perpendicular red line (lane width 28 cm)
       var halfSeg = 12;
       var perpX = Math.cos(headRad) * halfSeg;
       var perpY = -Math.sin(headRad) * halfSeg;
@@ -881,11 +947,40 @@
 
     if (e.ctrlKey || e.metaKey || e.altKey) return;
 
-    var dir = WASD[e.code];
-    if (dir) {
+    // Key M toggles between STEP and HOLD mode
+    if (e.code === 'KeyM') {
       e.preventDefault();
-      if (!keyHeld[dir]) { keyHeld[dir] = true; sendIntent(); }
+      sendToggleMode();
       return;
+    }
+
+    // Keys [ and ] nudge 90-degree turn calibration by -/+ 2%
+    if (e.code === 'BracketLeft') {
+      e.preventDefault();
+      sendNudgeTurn(0.98);
+      return;
+    }
+    if (e.code === 'BracketRight') {
+      e.preventDefault();
+      sendNudgeTurn(1.02);
+      return;
+    }
+
+    // In STEP mode: W, A, S, D run fixed motion
+    if (currentMode === 'step') {
+      if (e.repeat) return;
+      if (e.code === 'KeyW') { e.preventDefault(); sendStepMotion('W'); return; }
+      if (e.code === 'KeyA') { e.preventDefault(); sendStepMotion('A'); return; }
+      if (e.code === 'KeyD') { e.preventDefault(); sendStepMotion('D'); return; }
+      if (e.code === 'KeyS') { e.preventDefault(); sendStepMotion('S'); return; }
+    } else {
+      // In HOLD mode: continuous driving
+      var dir = WASD[e.code];
+      if (dir) {
+        e.preventDefault();
+        if (!keyHeld[dir]) { keyHeld[dir] = true; sendIntent(); }
+        return;
+      }
     }
 
     if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') {
@@ -938,16 +1033,16 @@
         if (wsReady()) ws.send(JSON.stringify({ type: 'spinCalib' }));
         break;
       case 'KeyQ':
-        speed = Math.max(30, speed - 15);
+        speed = Math.max(40, speed - 15);
         $('speedSlider').value = speed;
         $('speedVal').textContent = speed;
-        sendIntent();
+        if (currentMode === 'hold') sendIntent();
         break;
       case 'KeyE':
         speed = Math.min(255, speed + 15);
         $('speedSlider').value = speed;
         $('speedVal').textContent = speed;
-        sendIntent();
+        if (currentMode === 'hold') sendIntent();
         break;
       case 'Escape':
         $('settingsDrawer').classList.remove('open');
@@ -956,8 +1051,10 @@
   });
 
   window.addEventListener('keyup', function(e) {
-    var dir = WASD[e.code];
-    if (dir) { keyHeld[dir] = false; sendIntent(); return; }
+    if (currentMode === 'hold') {
+      var dir = WASD[e.code];
+      if (dir) { keyHeld[dir] = false; sendIntent(); return; }
+    }
     if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') { boostKey = false; sendIntent(); return; }
     if (e.code === 'Space') {
       e.preventDefault();
@@ -971,10 +1068,11 @@
   window.addEventListener('blur', function() {
     keyHeld = {}; boostKey = false; spaceHeld = false; estop = false;
     $('btnEstop').classList.remove('active');
-    sendIntent();
+    if (currentMode === 'hold') sendIntent();
   });
 
   // ---- UI BUTTON CLICKS & DRAWER ----
+  $('btnMode').addEventListener('click', sendToggleMode);
   $('clockDisplay').addEventListener('click', toggleTimer);
   $('btnSettingsToggle').addEventListener('click', function() {
     $('settingsDrawer').classList.toggle('open');
@@ -991,11 +1089,13 @@
   $('btnTurnL').addEventListener('click', function() { sendTurn('left'); });
   $('btnTurnR').addEventListener('click', function() { sendTurn('right'); });
   $('btnTurnU').addEventListener('click', function() { sendTurn('uturn'); });
+  $('btnNudgeMinus').addEventListener('click', function() { sendNudgeTurn(0.98); });
+  $('btnNudgePlus').addEventListener('click', function() { sendNudgeTurn(1.02); });
 
   $('speedSlider').addEventListener('input', function(e) {
     speed = parseInt(e.target.value, 10);
     $('speedVal').textContent = speed;
-    sendIntent();
+    if (currentMode === 'hold') sendIntent();
   });
 
   $('btnEstop').addEventListener('mousedown', function() {
@@ -1009,7 +1109,7 @@
 
   // Loops
   setInterval(function() {
-    sendIntent();
+    if (currentMode === 'hold') sendIntent();
     updateClock();
   }, 40);
 
