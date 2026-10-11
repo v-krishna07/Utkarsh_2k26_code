@@ -4,7 +4,8 @@
   "description": "Low-latency keyboard controller for an ESP32 soccer robot (UDP)",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node test_sensors.js"
   },
   "dependencies": {
     "ws": "^8.22.0"

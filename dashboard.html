@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Soccer Bot Control</title>
+<title>Soccer Bot &amp; Maze Driver Control</title>
 <style>
   :root {
     --bg: #12141c; --panel: #1c2030; --panel2: #262b40; --line: #3a4160;
@@ -31,6 +31,7 @@
   #clock {
     font-family: Consolas, "Courier New", monospace; font-size: 2rem; font-weight: 700;
     padding: 2px 16px; border-radius: 12px; background: var(--panel); border: 2px solid var(--line);
+    cursor: pointer;
   }
   #clock.run  { border-color: var(--accent); color: var(--accent); }
   #clock.done { border-color: var(--bad); color: var(--bad); animation: blink .7s infinite; }
@@ -43,6 +44,74 @@
   .card { background: var(--panel); border-radius: 14px; padding: 16px; border: 1px solid var(--line); }
   .wide { grid-column: 1 / -1; }
 
+  /* ----------------- MAZE / SENSOR STRIP ----------------- */
+  #mazeStrip { border-color: #4a5578; background: #191d2c; }
+  .sensor-grid {
+    display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-bottom: 12px;
+  }
+  .sensor-card {
+    background: #0c0e14; border: 2px solid var(--line); border-radius: 12px;
+    padding: 14px 10px; text-align: center; position: relative; transition: all .12s ease;
+  }
+  .sensor-card.blocked {
+    border-color: var(--bad); background: #331518; color: var(--bad);
+  }
+  .sensor-card.warn {
+    border-color: var(--warn); background: #33240d;
+  }
+  .sensor-tag {
+    font-size: .85rem; font-weight: 800; color: var(--dim); letter-spacing: .08em;
+    text-transform: uppercase; margin-bottom: 4px;
+  }
+  .sensor-val {
+    font-family: Consolas, monospace; font-size: 2.8rem; font-weight: 800; line-height: 1.1;
+  }
+  .sensor-blocked-badge {
+    color: var(--bad); font-weight: 900; font-size: .95rem; letter-spacing: .06em;
+    margin-top: 4px; text-transform: uppercase;
+  }
+
+  .advice-strip {
+    display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+    padding: 10px 16px; border-radius: 10px; background: var(--panel2); border: 2px solid var(--line);
+    margin-bottom: 10px; min-height: 52px;
+  }
+  .advice-main { font-size: 1.5rem; font-weight: 900; letter-spacing: .05em; }
+  .advice-main.straight { color: var(--accent); }
+  .advice-main.turn { color: var(--blue); }
+  .advice-main.reverse { color: var(--bad); }
+
+  .advice-chips { display: flex; gap: 8px; align-items: center; }
+  .chip {
+    font-size: .85rem; font-weight: 800; padding: 4px 10px; border-radius: 999px;
+    background: rgba(90, 169, 255, 0.2); border: 1px solid var(--blue); color: var(--blue);
+  }
+
+  .raw-echo-line {
+    font-size: .86rem; color: var(--dim); font-family: Consolas, monospace;
+    margin-bottom: 10px; display: flex; flex-wrap: wrap; gap: 12px; align-items: center;
+  }
+  .wiring-warn {
+    color: var(--bad); font-weight: 700; background: rgba(255, 90, 95, 0.15);
+    padding: 2px 8px; border-radius: 6px;
+  }
+
+  .maze-config-bar {
+    display: flex; flex-wrap: wrap; gap: 14px; align-items: center;
+    background: #0c0e14; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--line);
+    font-size: .92rem;
+  }
+  .maze-config-bar label { margin: 0; display: inline-flex; align-items: center; gap: 6px; }
+  .effective-n { color: var(--dim); font-size: .88rem; font-family: Consolas, monospace; }
+  .threshold-details { margin-left: auto; }
+  .threshold-details summary { cursor: pointer; color: var(--dim); font-weight: 600; }
+  .threshold-inputs {
+    display: flex; flex-wrap: wrap; gap: 10px; margin-top: 8px;
+  }
+  .threshold-inputs label { font-size: .88rem; }
+  .threshold-inputs input { width: 68px; }
+
+  /* ----------------- DASHBOARD CONTROLS ----------------- */
   button {
     font: inherit; font-weight: 700; color: var(--text); cursor: pointer;
     background: var(--panel2); border: 2px solid var(--line); border-radius: 10px; padding: 10px 12px;
@@ -99,18 +168,78 @@
 <body>
 
 <header>
-  <h1>Soccer Bot Control</h1>
+  <h1>Soccer Bot &amp; Maze Driver</h1>
   <div id="link" class="pill bad">Controller: connecting...</div>
   <div id="role" class="pill role">FREE DRIVE</div>
-  <div id="clock" title="Enter = start / reset the 3:00 match clock">3:00</div>
+  <div id="clock" title="Click or Enter to start / reset the 3:00 match clock">3:00</div>
 </header>
 
 <main>
+  <!-- TOP MAZE SENSOR STRIP -->
+  <section class="card wide" id="mazeStrip">
+    <h2>Ultrasonic Sensors &amp; Driver Advice</h2>
+
+    <!-- 1. Three Big Numbers in one row -->
+    <div class="sensor-grid">
+      <div class="sensor-card" id="cardSL">
+        <div class="sensor-tag">LEFT</div>
+        <div class="sensor-val" id="numSL">NO DATA</div>
+      </div>
+      <div class="sensor-card" id="cardSF">
+        <div class="sensor-tag">FRONT</div>
+        <div class="sensor-val" id="numSF">NO DATA</div>
+        <div class="sensor-blocked-badge" id="badgeSF" style="display:none">BLOCKED</div>
+      </div>
+      <div class="sensor-card" id="cardSR">
+        <div class="sensor-tag">RIGHT</div>
+        <div class="sensor-val" id="numSR">NO DATA</div>
+      </div>
+    </div>
+
+    <!-- 2. Large Advice Line + Chips -->
+    <div class="advice-strip" id="adviceStrip">
+      <div class="advice-main straight" id="adviceText">STRAIGHT</div>
+      <div class="advice-chips" id="adviceChips">
+        <span class="chip" id="chipL" style="display:none">LEFT OPEN</span>
+        <span class="chip" id="chipR" style="display:none">RIGHT OPEN</span>
+      </div>
+    </div>
+
+    <!-- 4. Raw echo microseconds line + wiring warning -->
+    <div class="raw-echo-line">
+      <span id="rawEchoText">raw: L -- µs | F -- µs | R -- µs</span>
+      <span id="frontWiringWarn" class="wiring-warn" style="display:none">front sensor: no signal, check wiring</span>
+    </div>
+
+    <!-- 3. Small selector & thresholds -->
+    <div class="maze-config-bar">
+      <div>
+        <label><input type="radio" name="sensorMode" value="median" id="modeMedian" checked> Median</label>
+        &nbsp;
+        <label><input type="radio" name="sensorMode" value="raw" id="modeRaw"> Raw</label>
+      </div>
+      <div>
+        <label>N: <input type="number" id="inputN" min="1" max="25" step="1" value="5" style="width:58px"></label>
+        <span class="effective-n" id="effectiveNText">(effective: 5)</span>
+      </div>
+      <div>
+        <label><input type="checkbox" id="adviceChk" checked> Advice</label>
+      </div>
+      <details class="threshold-details">
+        <summary>Thresholds</summary>
+        <div class="threshold-inputs">
+          <label>Front blocked (cm): <input type="number" id="frontBlockedInput" min="5" max="50" step="1" value="12"></label>
+          <label>Side open (cm): <input type="number" id="sideOpenInput" min="10" max="60" step="1" value="25"></label>
+        </div>
+      </details>
+    </div>
+  </section>
+
   <section class="card">
     <h2>Safety</h2>
     <button id="estop">EMERGENCY STOP &nbsp;[Space]</button>
     <div id="note"></div>
-    <div class="hint">Space toggles the stop. After releasing it, let go of all arrow keys once to re-arm.</div>
+    <div class="hint">Space toggles the stop. After releasing it, let go of all drive keys once to re-arm.</div>
   </section>
 
   <section class="card">
@@ -124,7 +253,7 @@
     <div class="row" style="margin-top:10px">
       <button id="btnGK" class="role"></button><button id="btnST" class="role"></button>
     </div>
-    <div class="hint">The slider and the buttons control the same speed: whichever you touched last wins. Hold <kbd>B</kbd> for a boost to full power.</div>
+    <div class="hint">The slider and the buttons control the same speed: whichever you touched last wins. Hold <kbd>B</kbd> or <kbd>Shift</kbd> for a boost to full power.</div>
   </section>
 
   <section class="card">
@@ -136,14 +265,14 @@
       <button class="right" data-dir="right">&#9654;</button>
     </div>
     <table class="keys">
-      <tr><td><kbd>&uarr;</kbd> <kbd>&darr;</kbd></td><td>Forward / backward</td></tr>
-      <tr><td><kbd>&larr;</kbd> or <kbd>&rarr;</kbd> alone</td><td>Spin in place</td></tr>
+      <tr><td><kbd>&uarr;</kbd> <kbd>&darr;</kbd> / <kbd>W</kbd> <kbd>S</kbd></td><td>Forward / backward</td></tr>
+      <tr><td><kbd>&larr;</kbd> or <kbd>&rarr;</kbd> / <kbd>A</kbd> <kbd>D</kbd></td><td>Spin in place</td></tr>
       <tr><td><kbd>&uarr;</kbd>+<kbd>&rarr;</kbd> etc.</td><td>Drive while turning (arc)</td></tr>
       <tr><td><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd></td><td>Slow / Normal / Turbo</td></tr>
       <tr><td><kbd>[</kbd> <kbd>]</kbd></td><td>Speed &minus;10 / +10</td></tr>
       <tr><td><kbd>Z</kbd> <kbd>X</kbd></td><td>Turn strength Normal / Racing</td></tr>
       <tr><td><kbd>Q</kbd> <kbd>E</kbd></td><td>Goalkeeper / Striker preset</td></tr>
-      <tr><td><kbd>B</kbd> (hold)</td><td>Boost</td></tr>
+      <tr><td><kbd>B</kbd> / <kbd>Shift</kbd></td><td>Boost</td></tr>
       <tr><td><kbd>Enter</kbd></td><td>Start / reset 3:00 clock</td></tr>
       <tr><td><kbd>Space</kbd></td><td>Emergency stop</td></tr>
     </table>
@@ -210,8 +339,6 @@
 (function () {
   'use strict';
   // ------------------------------ CONFIG ---------------------------------
-  // This page does NO motor math. It reports what the driver wants; server.js
-  // (control.js) computes the motor values and reports them back.
   var SPEED = { slow: 100, normal: 180, turbo: 255 };
   var TURN  = { normal: 0.35, racing: 0.75 };
   var ROLES = {
@@ -219,10 +346,10 @@
     st: { name: 'STRIKER',    speed: 255, turn: 0.75 }
   };
   var MATCH_MS = 3 * 60 * 1000;
-  var HEARTBEAT_MS = 40;          // intent is also sent immediately on every change
-  var MAX_WS_BACKLOG = 256;       // bytes; if the socket backs up, skip sends (never queue)
+  var HEARTBEAT_MS = 40;          // intent is sent immediately on change and at 25 Hz
+  var MAX_WS_BACKLOG = 256;       // bytes; skip send if socket is congested
   var WS_URL = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host;
-  // -----------------------------------------------------------------------
+  var SENSOR_STORAGE_KEY = 'soccer_bot_sensor_cfg';
 
   var $ = function (id) { return document.getElementById(id); };
   var ws = null;
@@ -230,9 +357,14 @@
   var role = null, estop = false, smooth = true, brake = true;
   var boostKey = false;
   var calib = { alpha: 1, fasterSide: 'left', spinLeft: 1, spinRight: 1, spinInvert: false };
-  var lastDriveKey = '', wsLoggedDown = false, busy = false;
+  var lastDriveKey = '', wsLoggedDown = false;
   var keyHeld = {};                       // 'up'|'down'|'left'|'right' -> true  (keyboard)
   var touchHeld = {};                     // pointerId -> dir                    (on-screen pad)
+
+  var isInputFocused = false;             // Rule 6: focus isolation
+
+  var sensorData = null;
+  var lastSensorPktAt = 0;
 
   // ------------------------------ LOG ------------------------------------
   function log(text) {
@@ -250,15 +382,18 @@
     for (var id in touchHeld) if (touchHeld[id] === dir) return true;
     return false;
   }
+
   function readInput() {
     return {
       thr: (isActive('up') ? 1 : 0) - (isActive('down') ? 1 : 0),
       str: (isActive('right') ? 1 : 0) - (isActive('left') ? 1 : 0)
     };
   }
+
   function wsReady() {
     return ws && ws.readyState === 1 && !(ws.bufferedAmount > MAX_WS_BACKLOG);
   }
+
   function sendIntent() {
     if (!wsReady()) return;
     var inp = readInput();
@@ -268,16 +403,132 @@
       estop: estop, smooth: smooth, brake: brake
     }));
   }
+
   function sendCalib(alpha, side) {
     if (!ws || ws.readyState !== 1) { log('Not connected - trim not sent.'); return; }
     ws.send(JSON.stringify({ type: 'calib', alpha: alpha, fasterSide: side }));
   }
-  // Partial calibration update (only the fields given are changed by the server).
+
   function sendCalibPart(part) {
     if (!ws || ws.readyState !== 1) { log('Not connected - setting not sent.'); return; }
     var m = { type: 'calib' };
     for (var k in part) m[k] = part[k];
     ws.send(JSON.stringify(m));
+  }
+
+  // ------------------------------ SENSOR CONFIG & LOCAL STORAGE ----------
+  function loadSensorSettings() {
+    try {
+      var raw = localStorage.getItem(SENSOR_STORAGE_KEY);
+      if (raw) return JSON.parse(raw);
+    } catch (_) {}
+    return {
+      mode: 'median',
+      n: 5,
+      adviceEnabled: true,
+      frontBlockedCm: 12,
+      sideOpenCm: 25
+    };
+  }
+
+  function saveSensorSettings(cfg) {
+    try {
+      localStorage.setItem(SENSOR_STORAGE_KEY, JSON.stringify(cfg));
+    } catch (_) {}
+  }
+
+  function sendSensorConfig() {
+    var mode = $('modeRaw').checked ? 'raw' : 'median';
+    var nVal = parseInt($('inputN').value, 10);
+    if (isNaN(nVal) || nVal < 1) nVal = 5;
+    if (nVal > 25) nVal = 25;
+    var effN = (nVal % 2 === 0) ? (nVal + 1) : nVal;
+    if (effN > 25) effN = 25;
+    $('effectiveNText').textContent = '(effective: ' + effN + ')';
+
+    var adviceEnabled = $('adviceChk').checked;
+    var frontBlockedCm = parseFloat($('frontBlockedInput').value) || 12;
+    var sideOpenCm = parseFloat($('sideOpenInput').value) || 25;
+
+    var cfg = {
+      type: 'sensorConfig',
+      mode: mode,
+      n: nVal,
+      adviceEnabled: adviceEnabled,
+      frontBlockedCm: frontBlockedCm,
+      sideOpenCm: sideOpenCm
+    };
+
+    saveSensorSettings({
+      mode: mode,
+      n: nVal,
+      adviceEnabled: adviceEnabled,
+      frontBlockedCm: frontBlockedCm,
+      sideOpenCm: sideOpenCm
+    });
+
+    if (wsReady()) {
+      ws.send(JSON.stringify(cfg));
+    }
+  }
+
+  // ------------------------------ SENSOR DISPLAY -------------------------
+  function renderSensors(s) {
+    sensorData = s;
+    lastSensorPktAt = Date.now();
+    updateSensorDisplay();
+  }
+
+  function updateSensorDisplay() {
+    var now = Date.now();
+    var stale = (!sensorData || (now - lastSensorPktAt > 500) || (sensorData.ageMs > 500));
+
+    function fmtVal(cm) {
+      if (stale) return 'NO DATA';
+      if (cm === null || cm === undefined) return '>100';
+      return Math.round(cm) + ' cm';
+    }
+
+    // 1. Three Big Numbers in whole cm
+    $('numSL').textContent = fmtVal(sensorData ? sensorData.cmL : null);
+    $('numSF').textContent = fmtVal(sensorData ? sensorData.cmF : null);
+    $('numSR').textContent = fmtVal(sensorData ? sensorData.cmR : null);
+
+    // 5. Front Box Red + BLOCKED badge
+    var isBlocked = !stale && sensorData && sensorData.frontBlocked;
+    $('cardSF').classList.toggle('blocked', !!isBlocked);
+    $('badgeSF').style.display = isBlocked ? 'block' : 'none';
+
+    // 5. Side Boxes Amber warning (< 5 cm, NO text)
+    var warnL = !stale && sensorData && sensorData.sideWarnL;
+    var warnR = !stale && sensorData && sensorData.sideWarnR;
+    $('cardSL').classList.toggle('warn', !!warnL);
+    $('cardSR').classList.toggle('warn', !!warnR);
+
+    // 2. Large Advice Line + Chips
+    var hasAdvice = !stale && sensorData && sensorData.advice;
+    if (hasAdvice) {
+      $('adviceStrip').style.display = 'flex';
+      var adv = sensorData.advice;
+      $('adviceText').textContent = adv;
+      $('adviceText').className = 'advice-main ' +
+        (adv === 'STRAIGHT' ? 'straight' : (adv === 'BLOCKED: REVERSE' ? 'reverse' : 'turn'));
+
+      var chips = sensorData.adviceChips || {};
+      $('chipL').style.display = chips.leftOpen ? 'inline-block' : 'none';
+      $('chipR').style.display = chips.rightOpen ? 'inline-block' : 'none';
+    } else {
+      $('adviceStrip').style.display = 'none';
+    }
+
+    // 4. Raw microsecond row + front wiring warning
+    if (stale || !sensorData) {
+      $('rawEchoText').textContent = 'raw: L -- µs | F -- µs | R -- µs';
+      $('frontWiringWarn').style.display = 'none';
+    } else {
+      $('rawEchoText').textContent = 'raw: L ' + sensorData.rawL + ' µs | F ' + sensorData.rawF + ' µs | R ' + sensorData.rawR + ' µs';
+      $('frontWiringWarn').style.display = sensorData.frontNoSignal ? 'inline-block' : 'none';
+    }
   }
 
   // ------------------------------ UI SYNC --------------------------------
@@ -311,7 +562,7 @@
     v = Math.max(0, Math.min(255, Math.round(v)));
     if (isNaN(v)) return;
     speed = v;
-    role = null;                                   // a manual change leaves the role preset
+    role = null;
     refreshUI(); sendIntent();
     if (label) log('Speed -> ' + v + ' (' + label + ')');
   }
@@ -339,12 +590,12 @@
     var any = false, k;
     for (k in keyHeld) if (keyHeld[k]) any = true;
     for (k in touchHeld) any = true;
-    if (any || boostKey) log('Focus lost - inputs released.');
+    if (any || boostKey) log('Focus changed - motor driving stopped.');
     keyHeld = {}; touchHeld = {}; boostKey = false;
     sendIntent();
   }
 
-  // ------------------------------ TELEMETRY (from Node) ------------------
+  // ------------------------------ TELEMETRY ------------------------------
   function setBar(fillEl, valEl, v) {
     var w = Math.min(100, Math.abs(v) / 255 * 50);
     fillEl.style.width = w + '%';
@@ -360,8 +611,9 @@
       : 'Controller not connected';
     $('brakeLine').textContent = t && t.brake ? 'Motors braking' : ' ';
     $('meter').classList.toggle('boost', !!(t && t.boost));
-    $('note').textContent = (t && t.waitNeutral) ? 'E-STOP released - let go of all arrow keys to re-arm' : '';
+    $('note').textContent = (t && t.waitNeutral) ? 'E-STOP released - let go of all drive keys to re-arm' : '';
   }
+
   function applyConfig(c) {
     calib = {
       alpha: typeof c.alpha === 'number' ? c.alpha : 1,
@@ -384,7 +636,7 @@
   }
 
   // ------------------------------ MATCH CLOCK ----------------------------
-  var clock = { state: 'idle', endAt: 0 };   // idle | run | done
+  var clock = { state: 'idle', endAt: 0 };
   function fmt(ms) {
     var s = Math.ceil(ms / 1000);
     return Math.floor(s / 60) + ':' + ('0' + (s % 60)).slice(-2);
@@ -406,7 +658,7 @@
     renderClock();
   }
 
-  // ------------------------------ MAIN LOOP ------------------------------
+  // ------------------------------ TICK -----------------------------------
   function tick() {
     var inp = readInput();
     var key = inp.thr + ',' + inp.str;
@@ -418,7 +670,7 @@
     }
     var btns = document.querySelectorAll('.pad button');
     for (var i = 0; i < btns.length; i++) btns[i].classList.toggle('pressed', isActive(btns[i].getAttribute('data-dir')));
-    sendIntent();      // heartbeat; the server brakes the robot if this goes quiet
+    sendIntent();
   }
 
   // ------------------------------ WEBSOCKET ------------------------------
@@ -434,58 +686,87 @@
     }
     try { ws = new WebSocket(WS_URL); } catch (e) { setTimeout(connectWS, 2000); return; }
     ws.onopen = function () {
-      wsLoggedDown = false; busy = false;
+      wsLoggedDown = false;
       setStatus(true, 'Controller connected');
       log('Connected to controller.');
       sendIntent();
+      sendSensorConfig(); // send sensor config on connect
     };
     ws.onmessage = function (ev) {
       var m;
       try { m = JSON.parse(ev.data); } catch (_) { return; }
       if (!m) return;
       if (m.type === 'telemetry') renderTelemetry(m);
+      else if (m.type === 'sensors') renderSensors(m);
       else if (m.type === 'config') applyConfig(m);
     };
     ws.onclose = function (ev) {
-      busy = ev && ev.code === 4001;
+      var busy = ev && ev.code === 4001;
       setStatus(false, busy ? 'Another dashboard is open - close it' : 'Controller offline - is server.js running?');
       renderTelemetry(null);
+      renderSensors(null);
       if (!wsLoggedDown) { wsLoggedDown = true; log(busy ? 'Another dashboard already controls the robot.' : 'Controller connection lost. Retrying every 2 s...'); }
       setTimeout(connectWS, 2000);
     };
-    ws.onerror = function () { /* onclose follows */ };
+    ws.onerror = function () {};
   }
 
-  // ------------------------------ KEYBOARD -------------------------------
-  var ARROWS = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right' };
-  function inNumberField(e) {
-    return e.target && e.target.tagName === 'INPUT' && e.target.type === 'number';
-  }
+  // ------------------------------ KEYBOARD & FOCUS ISOLATION -------------
+  var DRIVE_KEYS = {
+    ArrowUp: 'up', KeyW: 'up',
+    ArrowDown: 'down', KeyS: 'down',
+    ArrowLeft: 'left', KeyA: 'left',
+    ArrowRight: 'right', KeyD: 'right'
+  };
+
+  // Rule 6: When ANY input gains focus, send neutral intent and isolate driving
+  document.addEventListener('focusin', function (e) {
+    var tag = e.target && e.target.tagName;
+    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') {
+      isInputFocused = true;
+      releaseAll(); // sends neutral intent immediately
+    }
+  });
+
+  document.addEventListener('focusout', function (e) {
+    var tag = e.target && e.target.tagName;
+    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') {
+      isInputFocused = false;
+    }
+  });
 
   window.addEventListener('keydown', function (e) {
-    // Emergency stop has top priority: works from anywhere, with any modifier.
+    // If any input is focused: release focus on Enter or Escape, and NEVER drive!
+    if (isInputFocused) {
+      if (e.key === 'Enter' || e.key === 'Escape') {
+        if (e.target && e.target.blur) e.target.blur();
+      }
+      return; // Ignore W/A/S/D/Shift/Space/Arrows while focused
+    }
+
+    // Emergency stop
     if (e.code === 'Space') {
       e.preventDefault();
       if (!e.repeat) setEstop(!estop);
-      if (inNumberField(e)) e.target.blur();
-      return;
-    }
-    if (e.ctrlKey || e.metaKey || e.altKey) return;
-    if (inNumberField(e)) {
-      if (e.key === 'Enter' || e.key === 'Escape') e.target.blur();
       return;
     }
 
-    var dir = ARROWS[e.code];
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+    // Driving direction keys
+    var dir = DRIVE_KEYS[e.code];
     if (dir) {
-      e.preventDefault();                       // no page scroll, no slider/select movement
+      e.preventDefault();
       if (!keyHeld[dir]) { keyHeld[dir] = true; sendIntent(); }
       return;
     }
-    if (e.code === 'KeyB') {
+
+    // Boost key
+    if (e.code === 'KeyB' || e.code === 'ShiftLeft' || e.code === 'ShiftRight') {
       if (!boostKey) { boostKey = true; sendIntent(); }
       return;
     }
+
     if (e.repeat) return;
 
     switch (e.code) {
@@ -503,9 +784,12 @@
   });
 
   window.addEventListener('keyup', function (e) {
-    var dir = ARROWS[e.code];
-    if (dir) { keyHeld[dir] = false; sendIntent(); return; }   // always release, even if focus moved
-    if (e.code === 'KeyB') { boostKey = false; sendIntent(); return; }
+    if (isInputFocused) return;
+    var dir = DRIVE_KEYS[e.code];
+    if (dir) { keyHeld[dir] = false; sendIntent(); return; }
+    if (e.code === 'KeyB' || e.code === 'ShiftLeft' || e.code === 'ShiftRight') {
+      boostKey = false; sendIntent(); return;
+    }
     if (e.code === 'Space') e.preventDefault();
   });
 
@@ -524,6 +808,7 @@
   click('btnTurnNormal', function () { setTurn(TURN.normal, 'NORMAL'); });
   click('btnTurnRacing', function () { setTurn(TURN.racing, 'RACING'); });
   click('estop',     function () { setEstop(!estop); });
+  click('clock',     toggleClock);
 
   $('speedSlider').addEventListener('input', function (e) { setSpeed(parseInt(e.target.value, 10), null); });
   $('speedSlider').addEventListener('change', function (e) { log('Speed -> ' + speed + ' (' + speedName() + ')'); e.target.blur(); });
@@ -537,6 +822,7 @@
     if (isNaN(v)) v = turn;
     setTurn(v, null);
     log('Turn strength -> ' + turn.toFixed(2) + ' (' + turnName() + ')');
+    e.target.blur();
   });
 
   $('alphaInput').addEventListener('change', function (e) {
@@ -545,6 +831,7 @@
     v = Math.max(0, Math.min(1, v));
     e.target.value = v;
     sendCalib(v, $('fasterSide').value);
+    e.target.blur();
   });
   $('fasterSide').addEventListener('change', function (e) {
     var v = parseFloat($('alphaInput').value);
@@ -554,7 +841,7 @@
   });
 
   function clamp01(v) { return Math.max(0, Math.min(1, v)); }
-  function wireSpin(side) {                      // side: 'Left' | 'Right'
+  function wireSpin(side) {
     var slider = $('spin' + side + 'Slider'), input = $('spin' + side + 'Input'), key = 'spin' + side;
     slider.addEventListener('input', function (e) {
       var v = clamp01(parseInt(e.target.value, 10) / 100);
@@ -569,6 +856,7 @@
       e.target.value = v; slider.value = Math.round(v * 100);
       var p = {}; p[key] = v; sendCalibPart(p);
       log(side + ' spin strength -> ' + v);
+      e.target.blur();
     });
   }
   wireSpin('Left');
@@ -585,6 +873,14 @@
   $('brakeChk').addEventListener('change', function (e) {
     brake = e.target.checked; sendIntent(); log('Brake on release ' + (brake ? 'ON' : 'OFF')); e.target.blur();
   });
+
+  // Sensor Strip listeners
+  $('modeMedian').addEventListener('change', sendSensorConfig);
+  $('modeRaw').addEventListener('change', sendSensorConfig);
+  $('inputN').addEventListener('input', sendSensorConfig);
+  $('adviceChk').addEventListener('change', sendSensorConfig);
+  $('frontBlockedInput').addEventListener('input', sendSensorConfig);
+  $('sideOpenInput').addEventListener('input', sendSensorConfig);
 
   // On-screen pad: multi-touch capable via pointer events
   var padButtons = document.querySelectorAll('.pad button');
@@ -614,12 +910,25 @@
   $('smoothChk').checked = smooth;
   $('brakeChk').checked = brake;
 
+  // Restore saved sensor configuration
+  var savedSensors = loadSensorSettings();
+  if (savedSensors.mode === 'raw') $('modeRaw').checked = true;
+  else $('modeMedian').checked = true;
+  $('inputN').value = savedSensors.n || 5;
+  var effN = ((savedSensors.n || 5) % 2 === 0) ? ((savedSensors.n || 5) + 1) : (savedSensors.n || 5);
+  $('effectiveNText').textContent = '(effective: ' + effN + ')';
+  $('adviceChk').checked = savedSensors.adviceEnabled !== false;
+  $('frontBlockedInput').value = savedSensors.frontBlockedCm || 12;
+  $('sideOpenInput').value = savedSensors.sideOpenCm || 25;
+
   refreshUI();
   renderTelemetry(null);
+  updateSensorDisplay();
   renderClock();
   log('Dashboard ready.');
   setInterval(tick, HEARTBEAT_MS);
   setInterval(renderClock, 200);
+  setInterval(updateSensorDisplay, 100);
   connectWS();
 })();
 </script>

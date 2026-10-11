@@ -30,7 +30,7 @@ const uint16_t LOCAL_PORT = 4210;
 
 // Left motors  (L298N channel A) - same pins as the old tank wiring
 const int ENA = 14; const int IN1 = 26; const int IN2 = 27;
-// Right motors (L298N channel B) - same pins as the old tank wiring
+// Right motors (L298N channel B) - same pins as the ol d tank wiring
 // (GPIO 12 is a boot-strap pin: it works with your driver as wired. Don't pull ENB HIGH at power-up.)
 const int ENB = 12; const int IN3 = 33; const int IN4 = 25;
 
